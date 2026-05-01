@@ -28,6 +28,12 @@ class Paper:
         self.local_pdf_path: Optional[str] = None
 
 
+class SearchStrategy:
+    STRICT = "strict"
+    MODERATE = "moderate"
+    BROAD = "broad"
+
+
 class ArXivSniffer:
     ARXIV_API_URL = "http://export.arxiv.org/api/query"
     PDF_BASE_URL = "https://arxiv.org/pdf"
@@ -41,27 +47,66 @@ class ArXivSniffer:
         keywords: List[str],
         categories: Optional[List[str]] = None,
         search_all_fields: bool = False,
-        use_or_for_categories: bool = True,
+        use_or_for_categories: bool = False,
+        search_strategy: str = SearchStrategy.MODERATE,
     ) -> str:
-        keyword_queries = []
-        for keyword in keywords:
-            if search_all_fields:
-                keyword_queries.append(f"all:{keyword}")
-            else:
-                keyword_queries.append(f"(ti:{keyword} OR abs:{keyword})")
+        if not keywords and not categories:
+            raise ValueError("必须提供至少一个关键词或分类")
 
-        keyword_part = " OR ".join(keyword_queries)
+        print(f"\n  构建搜索查询...")
+        print(f"    关键词: {keywords}")
+        print(f"    分类: {categories}")
+        print(f"    搜索策略: {search_strategy}")
+        print(f"    搜索所有字段: {search_all_fields}")
+        print(f"    关键词和分类逻辑: {'OR' if use_or_for_categories else 'AND'}")
+
+        keyword_part = None
+        category_part = None
+
+        if keywords:
+            keyword_queries = []
+            for keyword in keywords:
+                if search_strategy == SearchStrategy.STRICT:
+                    quoted_keyword = f'"{keyword}"'
+                    if search_all_fields:
+                        keyword_queries.append(f"all:{quoted_keyword}")
+                    else:
+                        keyword_queries.append(f"(ti:{quoted_keyword} OR abs:{quoted_keyword})")
+                elif search_strategy == SearchStrategy.MODERATE:
+                    if search_all_fields:
+                        keyword_queries.append(f"all:{keyword}")
+                    else:
+                        keyword_queries.append(f"(ti:{keyword} OR abs:{keyword})")
+                else:
+                    keyword_queries.append(f"all:{keyword}")
+
+            keyword_part = " OR ".join(keyword_queries)
+            print(f"    关键词查询: {keyword_part}")
+
+        if categories:
+            category_queries = [f"cat:{cat}" for cat in categories]
+            category_part = " OR ".join(category_queries)
+            print(f"    分类查询: {category_part}")
+
+        if not keywords:
+            query = category_part
+            print(f"    最终查询 (仅分类): {query}")
+            return query
 
         if not categories:
-            return keyword_part
-
-        category_queries = [f"cat:{cat}" for cat in categories]
-        category_part = " OR ".join(category_queries)
+            query = keyword_part
+            print(f"    最终查询 (仅关键词): {query}")
+            return query
 
         if use_or_for_categories:
-            return f"({keyword_part}) OR ({category_part})"
+            query = f"({keyword_part}) OR ({category_part})"
+            logic = "OR"
         else:
-            return f"({keyword_part}) AND ({category_part})"
+            query = f"({keyword_part}) AND ({category_part})"
+            logic = "AND"
+
+        print(f"    最终查询 ({logic}): {query}")
+        return query
 
     def search(
         self,
@@ -69,12 +114,16 @@ class ArXivSniffer:
         categories: Optional[List[str]] = None,
         max_results: int = 10,
         sort_by: str = "submittedDate",
-        search_all_fields: bool = True,
+        search_all_fields: bool = False,
+        use_or_for_categories: bool = False,
+        search_strategy: str = SearchStrategy.MODERATE,
     ) -> List[Paper]:
         query = self.build_query(
             keywords=keywords,
             categories=categories,
             search_all_fields=search_all_fields,
+            use_or_for_categories=use_or_for_categories,
+            search_strategy=search_strategy,
         )
 
         params = {
@@ -86,7 +135,7 @@ class ArXivSniffer:
         }
 
         full_url = f"{self.ARXIV_API_URL}?{urlencode(params)}"
-        print(f"  arXiv API请求: {full_url}")
+        print(f"\n  arXiv API请求: {full_url}")
 
         try:
             response = requests.get(self.ARXIV_API_URL, params=params, timeout=30)
@@ -100,14 +149,16 @@ class ArXivSniffer:
             if hasattr(feed, 'bozo') and feed.bozo != 0:
                 print(f"  警告: Feed解析错误: {feed.bozo_exception}")
 
+            total_results = "N/A"
             if hasattr(feed.feed, 'opensearch_totalresults'):
-                print(f"  总匹配结果数: {feed.feed.opensearch_totalresults}")
+                total_results = feed.feed.opensearch_totalresults
+                print(f"  总匹配结果数: {total_results}")
 
             papers = []
             print(f"  解析到 {len(feed.entries)} 个条目")
 
             for i, entry in enumerate(feed.entries):
-                print(f"    条目 {i+1}: title={getattr(entry, 'title', 'N/A')[:50]}...")
+                print(f"\n    条目 {i+1}:")
 
                 arxiv_id = self._extract_arxiv_id(entry.id)
                 pdf_url = f"{self.PDF_BASE_URL}/{arxiv_id}.pdf"
@@ -122,16 +173,29 @@ class ArXivSniffer:
                 if hasattr(entry, 'tags') and entry.tags:
                     categories = [tag.term for tag in entry.tags]
 
+                title = getattr(entry, 'title', 'N/A').replace("\n", " ").strip()
+                print(f"      arXiv ID: {arxiv_id}")
+                print(f"      标题: {title[:80]}{'...' if len(title) > 80 else ''}")
+                print(f"      分类: {', '.join(categories) if categories else '未知'}")
+                print(f"      作者数: {len(authors)}")
+
                 paper = Paper(
-                    title=entry.title.replace("\n", " ").strip() if hasattr(entry, 'title') else "",
+                    title=title,
                     authors=authors,
-                    summary=entry.summary.replace("\n", " ").strip() if hasattr(entry, 'summary') else "",
+                    summary=getattr(entry, 'summary', '').replace("\n", " ").strip(),
                     arxiv_id=arxiv_id,
                     pdf_url=pdf_url,
-                    published=entry.published if hasattr(entry, 'published') else "",
+                    published=getattr(entry, 'published', ''),
                     categories=categories,
                 )
                 papers.append(paper)
+
+            if not papers and categories:
+                print(f"\n  提示: 当前搜索策略可能过于严格，请考虑:")
+                print(f"    1. 调整 SEARCH_STRATEGY 为 'moderate' 或 'broad'")
+                print(f"    2. 设置 USE_OR_FOR_CATEGORIES=true (关键词 OR 分类)")
+                print(f"    3. 扩展关键词列表")
+                print(f"    4. 减少分类限制")
 
             return papers
 

@@ -11,6 +11,12 @@ class DeployMode(str, Enum):
     GH_DEPLOY = "gh-deploy"
 
 
+class SearchStrategy(str, Enum):
+    STRICT = "strict"
+    MODERATE = "moderate"
+    BROAD = "broad"
+
+
 @dataclass
 class Config:
     SILICONFLOW_API_KEY: str = ""
@@ -47,6 +53,10 @@ class Config:
     API_TIMEOUT: int = 180
     API_MAX_RETRIES: int = 3
 
+    SEARCH_STRATEGY: str = SearchStrategy.MODERATE.value
+    SEARCH_ALL_FIELDS: bool = False
+    USE_OR_FOR_CATEGORIES: bool = False
+
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
 
@@ -77,6 +87,9 @@ class Config:
             VISION_DPI=data.get("VISION_DPI", 150),
             API_TIMEOUT=data.get("API_TIMEOUT", 180),
             API_MAX_RETRIES=data.get("API_MAX_RETRIES", 3),
+            SEARCH_STRATEGY=data.get("SEARCH_STRATEGY", SearchStrategy.MODERATE.value),
+            SEARCH_ALL_FIELDS=data.get("SEARCH_ALL_FIELDS", False),
+            USE_OR_FOR_CATEGORIES=data.get("USE_OR_FOR_CATEGORIES", False),
         )
 
 
@@ -145,6 +158,10 @@ class ConfigManager:
         if self.config.MKDOCS_DEPLOY_MODE in [DeployMode.PUSH_TO_BRANCH.value, DeployMode.GH_DEPLOY.value]:
             if not self.config.MKDOCS_REPO_URL:
                 errors.append("MKDOCS_REPO_URL is required when deploy mode is 'push-to-branch' or 'gh-deploy'")
+
+        valid_strategies = [s.value for s in SearchStrategy]
+        if self.config.SEARCH_STRATEGY not in valid_strategies:
+            errors.append(f"SEARCH_STRATEGY '{self.config.SEARCH_STRATEGY}' is invalid. Valid strategies: {', '.join(valid_strategies)}")
 
         return errors
 

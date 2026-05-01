@@ -44,5 +44,9 @@
   "VISION_DPI": 150,
 
   "API_TIMEOUT": 180,
-  "API_MAX_RETRIES": 3
+  "API_MAX_RETRIES": 3,
+
+  "SEARCH_STRATEGY": "moderate",
+  "SEARCH_ALL_FIELDS": false,
+  "USE_OR_FOR_CATEGORIES": false
 }
