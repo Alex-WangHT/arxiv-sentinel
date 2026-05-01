@@ -1,0 +1,38 @@
+{
+  "SILICONFLOW_API_KEY": "your_siliconflow_api_key_here",
+  "SILICONFLOW_MODEL": "Qwen/Qwen2.5-7B-Instruct",
+
+  "KEYWORDS": [
+    "LLM",
+    "large language model",
+    "transformer",
+    "GPT",
+    "BERT"
+  ],
+
+  "CATEGORIES": [
+    "cs.CL",
+    "cs.AI",
+    "cs.CV",
+    "cs.LG",
+    "cs.IR"
+  ],
+
+  "MAX_RESULTS_PER_SEARCH": 10,
+
+  "PDF_CACHE_DIR": "./pdf_cache",
+  "MARKDOWN_OUTPUT_DIR": "./output/markdown",
+  "PROMPT_DIR": "./markdown",
+
+  "SITE_NAME": "arXiv Sentinel",
+  "SITE_DESCRIPTION": "每日arXiv论文智能总结",
+
+  "MKDOCS_REPO_URL": "",
+  "MKDOCS_REPO_BRANCH": "gh-pages",
+  "MKDOCS_WORKING_DIR": "./mkdocs_repo",
+  "MKDOCS_DEPLOY_MODE": "build-only",
+
+  "GIT_COMMIT_MESSAGE": "自动更新: 新增{count}篇论文总结",
+  "GIT_AUTHOR_NAME": "arXiv Sentinel Bot",
+  "GIT_AUTHOR_EMAIL": "bot@arxiv-sentinel.local"
+}
