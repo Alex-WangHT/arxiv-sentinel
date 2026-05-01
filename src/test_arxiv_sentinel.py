@@ -11,7 +11,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from sniffer import ArXivSniffer, Paper
 from summarizer import PDFExtractor, SiliconFlowClient, Summarizer
 from publisher import MkDocsPublisher
-from config import Config, ConfigManager
+from config import Config, ConfigManager, DeployMode
 
 
 class TestPaper(unittest.TestCase):
@@ -220,28 +220,43 @@ class TestSummarizer(unittest.TestCase):
         self.assertIn("summary", template)
 
 
+class TestDeployMode(unittest.TestCase):
+    def test_deploy_mode_values(self):
+        self.assertEqual(DeployMode.BUILD_ONLY, "build-only")
+        self.assertEqual(DeployMode.PUSH_TO_BRANCH, "push-to-branch")
+        self.assertEqual(DeployMode.GH_DEPLOY, "gh-deploy")
+
+
 class TestConfig(unittest.TestCase):
     def test_default_config(self):
         config = Config()
         self.assertEqual(config.SILICONFLOW_MODEL, "Qwen/Qwen2.5-7B-Instruct")
         self.assertEqual(config.MAX_RESULTS_PER_SEARCH, 10)
         self.assertIn("LLM", config.KEYWORDS)
+        self.assertEqual(config.MKDOCS_DEPLOY_MODE, "build-only")
+        self.assertEqual(config.MKDOCS_WORKING_DIR, "./mkdocs_repo")
 
     def test_to_dict(self):
         config = Config(SILICONFLOW_API_KEY="test_key")
         data = config.to_dict()
         self.assertEqual(data["SILICONFLOW_API_KEY"], "test_key")
+        self.assertIn("MKDOCS_REPO_URL", data)
+        self.assertIn("GIT_COMMIT_MESSAGE", data)
 
     def test_from_dict(self):
         data = {
             "SILICONFLOW_API_KEY": "test_key",
             "KEYWORDS": ["custom", "keywords"],
             "MAX_RESULTS_PER_SEARCH": 5,
+            "MKDOCS_REPO_URL": "https://github.com/user/repo.git",
+            "MKDOCS_DEPLOY_MODE": "push-to-branch",
         }
         config = Config.from_dict(data)
         self.assertEqual(config.SILICONFLOW_API_KEY, "test_key")
         self.assertEqual(config.KEYWORDS, ["custom", "keywords"])
         self.assertEqual(config.MAX_RESULTS_PER_SEARCH, 5)
+        self.assertEqual(config.MKDOCS_REPO_URL, "https://github.com/user/repo.git")
+        self.assertEqual(config.MKDOCS_DEPLOY_MODE, "push-to-branch")
 
 
 class TestConfigManager(unittest.TestCase):
@@ -258,6 +273,7 @@ class TestConfigManager(unittest.TestCase):
         config_data = {
             "SILICONFLOW_API_KEY": "file_key",
             "KEYWORDS": ["test1", "test2"],
+            "MKDOCS_REPO_URL": "https://github.com/test/repo.git",
         }
         with open(self.config_file, "w") as f:
             json.dump(config_data, f)
@@ -267,10 +283,14 @@ class TestConfigManager(unittest.TestCase):
 
         self.assertEqual(config.SILICONFLOW_API_KEY, "file_key")
         self.assertEqual(config.KEYWORDS, ["test1", "test2"])
+        self.assertEqual(config.MKDOCS_REPO_URL, "https://github.com/test/repo.git")
 
     def test_save_config(self):
         manager = ConfigManager(self.config_file)
-        manager.update(SILICONFLOW_API_KEY="saved_key")
+        manager.update(
+            SILICONFLOW_API_KEY="saved_key",
+            MKDOCS_REPO_URL="https://github.com/saved/repo.git",
+        )
 
         self.assertTrue(os.path.exists(self.config_file))
 
@@ -278,6 +298,7 @@ class TestConfigManager(unittest.TestCase):
             data = json.load(f)
 
         self.assertEqual(data["SILICONFLOW_API_KEY"], "saved_key")
+        self.assertEqual(data["MKDOCS_REPO_URL"], "https://github.com/saved/repo.git")
 
     def test_validate_missing_api_key(self):
         manager = ConfigManager(self.config_file)
@@ -291,12 +312,38 @@ class TestConfigManager(unittest.TestCase):
         errors = manager.validate()
         self.assertEqual(len(errors), 0)
 
+    def test_validate_invalid_deploy_mode(self):
+        manager = ConfigManager(self.config_file)
+        manager.update(
+            SILICONFLOW_API_KEY="valid_key",
+            MKDOCS_DEPLOY_MODE="invalid-mode",
+        )
+        errors = manager.validate()
+        self.assertEqual(len(errors), 1)
+        self.assertIn("MKDOCS_DEPLOY_MODE", errors[0])
+
+    def test_validate_push_mode_requires_repo_url(self):
+        manager = ConfigManager(self.config_file)
+        manager.update(
+            SILICONFLOW_API_KEY="valid_key",
+            MKDOCS_DEPLOY_MODE="push-to-branch",
+            MKDOCS_REPO_URL="",
+        )
+        errors = manager.validate()
+        self.assertEqual(len(errors), 1)
+        self.assertIn("MKDOCS_REPO_URL", errors[0])
+
 
 class TestMkDocsPublisher(unittest.TestCase):
     def setUp(self):
         self.temp_dir = tempfile.mkdtemp()
-        self.page_dir = os.path.join(self.temp_dir, "page")
-        self.publisher = MkDocsPublisher(page_dir=self.page_dir)
+        self.working_dir = os.path.join(self.temp_dir, "mkdocs_repo")
+        self.publisher = MkDocsPublisher(
+            working_dir=self.working_dir,
+            repo_url="",
+            repo_branch="gh-pages",
+            deploy_mode="build-only",
+        )
 
     def tearDown(self):
         import shutil
@@ -306,7 +353,7 @@ class TestMkDocsPublisher(unittest.TestCase):
     def test_initialize_project(self):
         self.publisher.initialize_project(site_name="Test Site")
 
-        self.assertTrue(os.path.exists(self.page_dir))
+        self.assertTrue(os.path.exists(self.working_dir))
         self.assertTrue(os.path.exists(self.publisher.docs_dir))
         self.assertTrue(os.path.exists(self.publisher.mkdocs_yml_path))
 
@@ -332,6 +379,30 @@ class TestMkDocsPublisher(unittest.TestCase):
     def test_copy_markdown_files_nonexistent(self):
         copied = self.publisher.copy_markdown_files(["/nonexistent.md"])
         self.assertEqual(len(copied), 0)
+
+    def test_deploy_build_only(self):
+        self.publisher.deploy_mode = "build-only"
+        result = self.publisher.deploy()
+        self.assertTrue(result)
+
+    def test_get_authenticated_url_without_token(self):
+        self.publisher.repo_url = "https://github.com/user/repo.git"
+        url = self.publisher._get_authenticated_url()
+        self.assertEqual(url, "https://github.com/user/repo.git")
+
+    @patch.dict(os.environ, {"GITHUB_TOKEN": "test_token"})
+    def test_get_authenticated_url_with_token_https(self):
+        self.publisher.repo_url = "https://github.com/user/repo.git"
+        url = self.publisher._get_authenticated_url()
+        self.assertIn("test_token@", url)
+        self.assertIn("github.com", url)
+
+    @patch.dict(os.environ, {"GITHUB_TOKEN": "test_token"})
+    def test_get_authenticated_url_with_token_ssh(self):
+        self.publisher.repo_url = "git@github.com:user/repo.git"
+        url = self.publisher._get_authenticated_url()
+        self.assertIn("test_token@", url)
+        self.assertIn("https://", url)
 
 
 if __name__ == "__main__":

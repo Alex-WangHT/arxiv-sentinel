@@ -22,12 +22,17 @@
 
   "PDF_CACHE_DIR": "./pdf_cache",
   "MARKDOWN_OUTPUT_DIR": "./output/markdown",
-  "PAGE_DIR": "./page",
   "PROMPT_DIR": "./markdown",
 
-  "ENABLE_SCHEDULER": false,
-  "SCHEDULE_TIME": "08:00",
-
   "SITE_NAME": "arXiv Sentinel",
-  "SITE_DESCRIPTION": "每日arXiv论文智能总结"
+  "SITE_DESCRIPTION": "每日arXiv论文智能总结",
+
+  "MKDOCS_REPO_URL": "",
+  "MKDOCS_REPO_BRANCH": "gh-pages",
+  "MKDOCS_WORKING_DIR": "./mkdocs_repo",
+  "MKDOCS_DEPLOY_MODE": "build-only",
+
+  "GIT_COMMIT_MESSAGE": "自动更新: 新增{count}篇论文总结",
+  "GIT_AUTHOR_NAME": "arXiv Sentinel Bot",
+  "GIT_AUTHOR_EMAIL": "bot@arxiv-sentinel.local"
 }

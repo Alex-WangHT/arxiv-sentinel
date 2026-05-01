@@ -2,6 +2,13 @@ import os
 import json
 from typing import List, Optional, Dict, Any
 from dataclasses import dataclass, asdict, field
+from enum import Enum
+
+
+class DeployMode(str, Enum):
+    BUILD_ONLY = "build-only"
+    PUSH_TO_BRANCH = "push-to-branch"
+    GH_DEPLOY = "gh-deploy"
 
 
 @dataclass
@@ -16,14 +23,19 @@ class Config:
 
     PDF_CACHE_DIR: str = "./pdf_cache"
     MARKDOWN_OUTPUT_DIR: str = "./output/markdown"
-    PAGE_DIR: str = "./page"
     PROMPT_DIR: str = "./markdown"
-
-    ENABLE_SCHEDULER: bool = False
-    SCHEDULE_TIME: str = "08:00"
 
     SITE_NAME: str = "arXiv Sentinel"
     SITE_DESCRIPTION: str = "每日arXiv论文总结"
+
+    MKDOCS_REPO_URL: str = ""
+    MKDOCS_REPO_BRANCH: str = "gh-pages"
+    MKDOCS_WORKING_DIR: str = "./mkdocs_repo"
+    MKDOCS_DEPLOY_MODE: str = DeployMode.BUILD_ONLY.value
+
+    GIT_COMMIT_MESSAGE: str = "自动更新: 新增{count}篇论文总结"
+    GIT_AUTHOR_NAME: str = "arXiv Sentinel Bot"
+    GIT_AUTHOR_EMAIL: str = "bot@arxiv-sentinel.local"
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -38,18 +50,23 @@ class Config:
             MAX_RESULTS_PER_SEARCH=data.get("MAX_RESULTS_PER_SEARCH", 10),
             PDF_CACHE_DIR=data.get("PDF_CACHE_DIR", "./pdf_cache"),
             MARKDOWN_OUTPUT_DIR=data.get("MARKDOWN_OUTPUT_DIR", "./output/markdown"),
-            PAGE_DIR=data.get("PAGE_DIR", "./page"),
             PROMPT_DIR=data.get("PROMPT_DIR", "./markdown"),
-            ENABLE_SCHEDULER=data.get("ENABLE_SCHEDULER", False),
-            SCHEDULE_TIME=data.get("SCHEDULE_TIME", "08:00"),
             SITE_NAME=data.get("SITE_NAME", "arXiv Sentinel"),
             SITE_DESCRIPTION=data.get("SITE_DESCRIPTION", "每日arXiv论文总结"),
+            MKDOCS_REPO_URL=data.get("MKDOCS_REPO_URL", ""),
+            MKDOCS_REPO_BRANCH=data.get("MKDOCS_REPO_BRANCH", "gh-pages"),
+            MKDOCS_WORKING_DIR=data.get("MKDOCS_WORKING_DIR", "./mkdocs_repo"),
+            MKDOCS_DEPLOY_MODE=data.get("MKDOCS_DEPLOY_MODE", DeployMode.BUILD_ONLY.value),
+            GIT_COMMIT_MESSAGE=data.get("GIT_COMMIT_MESSAGE", "自动更新: 新增{count}篇论文总结"),
+            GIT_AUTHOR_NAME=data.get("GIT_AUTHOR_NAME", "arXiv Sentinel Bot"),
+            GIT_AUTHOR_EMAIL=data.get("GIT_AUTHOR_EMAIL", "bot@arxiv-sentinel.local"),
         )
 
 
 class ConfigManager:
     DEFAULT_CONFIG_FILE = "./config.json"
     ENV_API_KEY = "SILICONFLOW_API_KEY"
+    ENV_GITHUB_TOKEN = "GITHUB_TOKEN"
 
     def __init__(self, config_file: Optional[str] = None):
         self.config_file = config_file or self.DEFAULT_CONFIG_FILE
@@ -104,10 +121,15 @@ class ConfigManager:
         if self.config.MAX_RESULTS_PER_SEARCH <= 0:
             errors.append("MAX_RESULTS_PER_SEARCH must be a positive integer.")
 
-        if self.config.ENABLE_SCHEDULER:
-            import re
-            time_pattern = r"^([01]?[0-9]|2[0-3]):[0-5][0-9]$"
-            if not re.match(time_pattern, self.config.SCHEDULE_TIME):
-                errors.append(f"SCHEDULE_TIME '{self.config.SCHEDULE_TIME}' is invalid. Use format 'HH:MM'.")
+        valid_modes = [mode.value for mode in DeployMode]
+        if self.config.MKDOCS_DEPLOY_MODE not in valid_modes:
+            errors.append(f"MKDOCS_DEPLOY_MODE '{self.config.MKDOCS_DEPLOY_MODE}' is invalid. Valid modes: {', '.join(valid_modes)}")
+
+        if self.config.MKDOCS_DEPLOY_MODE in [DeployMode.PUSH_TO_BRANCH.value, DeployMode.GH_DEPLOY.value]:
+            if not self.config.MKDOCS_REPO_URL:
+                errors.append("MKDOCS_REPO_URL is required when deploy mode is 'push-to-branch' or 'gh-deploy'")
 
         return errors
+
+    def get_github_token(self) -> Optional[str]:
+        return os.environ.get(self.ENV_GITHUB_TOKEN)
