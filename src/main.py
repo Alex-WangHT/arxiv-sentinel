@@ -4,8 +4,8 @@ import argparse
 from typing import List, Optional
 from datetime import datetime
 
-from .config import ConfigManager, DeployMode
-from .sniffer import ArXivSniffer, Paper
+from .config import ConfigManager, DeployMode, SearchStrategy
+from .sniffer import ArXivSniffer, Paper, SearchStrategy as SnifferSearchStrategy
 from .summarizer import Summarizer
 from .publisher import MkDocsPublisher
 
@@ -70,6 +70,9 @@ class arXivSentinel:
             keywords=keywords,
             categories=self.config.CATEGORIES if self.config.CATEGORIES else None,
             max_results=max_results,
+            search_all_fields=self.config.SEARCH_ALL_FIELDS,
+            use_or_for_categories=self.config.USE_OR_FOR_CATEGORIES,
+            search_strategy=self.config.SEARCH_STRATEGY,
         )
         print(f"  找到 {len(papers)} 篇论文")
 
@@ -181,6 +184,13 @@ def main():
     parser.add_argument("--no-filter", action="store_true", help="禁用AI论文筛选")
     parser.add_argument("--use-vision", action="store_true", help="启用视觉模式（多模态模型处理PDF图像）")
     parser.add_argument("--no-vision", action="store_true", help="禁用视觉模式（使用文本提取）")
+    parser.add_argument("--search-strict", action="store_true", help="使用严格搜索策略（精确短语匹配）")
+    parser.add_argument("--search-moderate", action="store_true", help="使用中等搜索策略（默认）")
+    parser.add_argument("--search-broad", action="store_true", help="使用宽松搜索策略")
+    parser.add_argument("--use-or-categories", action="store_true", help="使用OR连接关键词和分类（更宽松）")
+    parser.add_argument("--use-and-categories", action="store_true", help="使用AND连接关键词和分类（更严格，默认）")
+    parser.add_argument("--search-all-fields", action="store_true", help="搜索所有字段（更宽松）")
+    parser.add_argument("--search-title-abstract", action="store_true", help="仅搜索标题和摘要（更严格，默认）")
 
     args = parser.parse_args()
 
@@ -194,6 +204,23 @@ def main():
 
     if args.no_vision:
         sentinel.config.USE_VISION_MODE = False
+
+    if args.search_strict:
+        sentinel.config.SEARCH_STRATEGY = SearchStrategy.STRICT.value
+    if args.search_moderate:
+        sentinel.config.SEARCH_STRATEGY = SearchStrategy.MODERATE.value
+    if args.search_broad:
+        sentinel.config.SEARCH_STRATEGY = SearchStrategy.BROAD.value
+
+    if args.use_or_categories:
+        sentinel.config.USE_OR_FOR_CATEGORIES = True
+    if args.use_and_categories:
+        sentinel.config.USE_OR_FOR_CATEGORIES = False
+
+    if args.search_all_fields:
+        sentinel.config.SEARCH_ALL_FIELDS = True
+    if args.search_title_abstract:
+        sentinel.config.SEARCH_ALL_FIELDS = False
 
     if args.serve:
         sentinel.publisher.initialize_project()
