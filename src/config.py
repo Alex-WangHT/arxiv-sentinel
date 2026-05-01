@@ -39,6 +39,14 @@ class Config:
 
     ENABLE_LLM_FILTER: bool = True
 
+    USE_VISION_MODE: bool = False
+    VISION_MODEL: str = "Qwen/Qwen2-VL-72B-Instruct"
+    VISION_MAX_PAGES: int = 10
+    VISION_DPI: int = 150
+
+    API_TIMEOUT: int = 180
+    API_MAX_RETRIES: int = 3
+
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
 
@@ -63,6 +71,12 @@ class Config:
             GIT_AUTHOR_NAME=data.get("GIT_AUTHOR_NAME", "arXiv Sentinel Bot"),
             GIT_AUTHOR_EMAIL=data.get("GIT_AUTHOR_EMAIL", "bot@arxiv-sentinel.local"),
             ENABLE_LLM_FILTER=data.get("ENABLE_LLM_FILTER", True),
+            USE_VISION_MODE=data.get("USE_VISION_MODE", False),
+            VISION_MODEL=data.get("VISION_MODEL", "Qwen/Qwen2-VL-72B-Instruct"),
+            VISION_MAX_PAGES=data.get("VISION_MAX_PAGES", 10),
+            VISION_DPI=data.get("VISION_DPI", 150),
+            API_TIMEOUT=data.get("API_TIMEOUT", 180),
+            API_MAX_RETRIES=data.get("API_MAX_RETRIES", 3),
         )
 
 
