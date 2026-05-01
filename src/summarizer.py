@@ -1,10 +1,11 @@
 import os
 import re
-import json
+import io
+import base64
 import time
 import requests
 import fitz
-from typing import Dict, Optional, List, Tuple
+from typing import Dict, Optional, List, Tuple, Union
 from datetime import datetime
 
 from .sniffer import Paper
@@ -23,10 +24,11 @@ class RetryManager:
         for attempt in range(self.max_retries):
             try:
                 return func(*args, **kwargs)
-            except (requests.exceptions.Timeout, requests.exceptions.ConnectionError, requests.exceptions.ReadTimeout) as e:
+            except (requests.exceptions.Timeout, requests.exceptions.ConnectionError, 
+                    requests.exceptions.ReadTimeout, requests.exceptions.ChunkedEncodingError) as e:
                 last_exception = e
                 if attempt < self.max_retries - 1:
-                    print(f"    重试 {attempt + 1}/{self.max_retries} 后... (等待 {delay}s)")
+                    print(f"    重试 {attempt + 1}/{self.max_retries}... (等待 {delay}s)")
                     time.sleep(delay)
                     delay *= self.backoff_factor
                 else:
@@ -35,6 +37,251 @@ class RetryManager:
                 raise
 
         raise last_exception
+
+
+class ImageConverter:
+    def __init__(self, max_pages: int = 10, dpi: int = 150):
+        self.max_pages = max_pages
+        self.dpi = dpi
+
+    def pdf_to_images(self, pdf_path: str) -> List[bytes]:
+        doc = fitz.open(pdf_path)
+        images = []
+
+        total_pages = min(len(doc), self.max_pages)
+        print(f"    转换PDF前 {total_pages} 页为图像...")
+
+        for page_num in range(total_pages):
+            page = doc[page_num]
+            mat = fitz.Matrix(self.dpi / 72, self.dpi / 72)
+            pix = page.get_pixmap(matrix=mat)
+            
+            img_data = pix.tobytes("png")
+            images.append(img_data)
+
+        doc.close()
+        return images
+
+    def image_to_base64(self, img_data: bytes) -> str:
+        return base64.b64encode(img_data).decode("utf-8")
+
+    def pdf_to_base64_images(self, pdf_path: str) -> List[str]:
+        images = self.pdf_to_images(pdf_path)
+        return [self.image_to_base64(img) for img in images]
+
+
+class SiliconFlowClient:
+    BASE_URL = "https://api.siliconflow.cn/v1/chat/completions"
+
+    def __init__(
+        self,
+        api_key: str,
+        text_model: str = "Qwen/Qwen2.5-7B-Instruct",
+        vision_model: str = "Qwen/Qwen2-VL-72B-Instruct",
+        timeout: int = 180,
+        max_retries: int = 3,
+    ):
+        self.api_key = api_key
+        self.text_model = text_model
+        self.vision_model = vision_model
+        self.timeout = timeout
+        self.max_retries = max_retries
+        self.headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        }
+        self.retry_manager = RetryManager(max_retries=max_retries)
+
+    def chat(
+        self,
+        prompt: str,
+        system_prompt: str = "你是一个专业的学术论文助手。",
+        temperature: float = 0.3,
+        max_tokens: int = 4096,
+        use_vision_model: bool = False,
+    ) -> str:
+        model = self.vision_model if use_vision_model else self.text_model
+
+        def _make_request():
+            payload = {
+                "model": model,
+                "messages": [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": prompt},
+                ],
+                "temperature": temperature,
+                "max_tokens": max_tokens,
+            }
+
+            response = requests.post(
+                self.BASE_URL,
+                headers=self.headers,
+                json=payload,
+                timeout=self.timeout,
+            )
+            response.raise_for_status()
+
+            result = response.json()
+            content = result["choices"][0]["message"]["content"]
+            return self._clean_response(content)
+
+        return self.retry_manager.execute(_make_request)
+
+    def chat_with_images(
+        self,
+        text_prompt: str,
+        images: List[Union[str, bytes]],
+        system_prompt: str = "你是一个专业的学术论文助手。",
+        temperature: float = 0.3,
+        max_tokens: int = 4096,
+        detail: str = "high",
+    ) -> str:
+        def _make_request():
+            content_parts = []
+
+            for i, img in enumerate(images):
+                if isinstance(img, bytes):
+                    base64_img = base64.b64encode(img).decode("utf-8")
+                    img_url = f"data:image/png;base64,{base64_img}"
+                elif img.startswith("data:"):
+                    img_url = img
+                else:
+                    base64_img = img
+                    img_url = f"data:image/png;base64,{base64_img}"
+
+                content_parts.append({
+                    "type": "image_url",
+                    "image_url": {
+                        "url": img_url,
+                        "detail": detail,
+                    }
+                })
+
+            content_parts.append({
+                "type": "text",
+                "text": text_prompt,
+            })
+
+            payload = {
+                "model": self.vision_model,
+                "messages": [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": content_parts},
+                ],
+                "temperature": temperature,
+                "max_tokens": max_tokens,
+            }
+
+            response = requests.post(
+                self.BASE_URL,
+                headers=self.headers,
+                json=payload,
+                timeout=self.timeout,
+            )
+            response.raise_for_status()
+
+            result = response.json()
+            content = result["choices"][0]["message"]["content"]
+            return self._clean_response(content)
+
+        return self.retry_manager.execute(_make_request)
+
+    def chat_with_pdf(
+        self,
+        pdf_path: str,
+        text_prompt: str,
+        system_prompt: str = "你是一个专业的学术论文助手。",
+        temperature: float = 0.3,
+        max_tokens: int = 4096,
+        max_pages: int = 10,
+    ) -> str:
+        converter = ImageConverter(max_pages=max_pages)
+        images = converter.pdf_to_images(pdf_path)
+
+        if not images:
+            raise ValueError(f"无法从PDF提取图像: {pdf_path}")
+
+        return self.chat_with_images(
+            text_prompt=text_prompt,
+            images=images,
+            system_prompt=system_prompt,
+            temperature=temperature,
+            max_tokens=max_tokens,
+        )
+
+    def _clean_response(self, content: str) -> str:
+        content = content.encode('utf-8', errors='ignore').decode('utf-8')
+        content = content.replace('\ufffd', '')
+        content = re.sub(r'\n{3,}', '\n\n', content)
+        return content.strip()
+
+
+class PaperFilter:
+    RELEVANT = "RELEVANT"
+    IRRELEVANT = "IRRELEVANT"
+
+    def __init__(self, siliconflow_client: SiliconFlowClient):
+        self.client = siliconflow_client
+
+    def is_relevant(self, paper: Paper, target_keywords: List[str]) -> Tuple[bool, str]:
+        if not paper.summary or len(paper.summary.strip()) < 30:
+            print(f"    警告: 论文 {paper.arxiv_id} 摘要过短，跳过筛选")
+            return True, "摘要过短，跳过筛选"
+
+        keywords_str = ", ".join(target_keywords)
+        categories_str = ", ".join(paper.categories) if paper.categories else "未知"
+
+        system_prompt = f"""你是一个严格的学术论文筛选助手。你的任务是根据论文的标题、分类和摘要，判断这篇论文是否与给定的关键词高度相关。
+
+判断规则：
+1. 只输出两个词之一：{self.RELEVANT} 或 {self.IRRELEVANT}
+2. 不要输出任何其他解释、标点或说明文字
+3. 如果论文明确属于物理、化学、生物、医学、机械等非计算机科学领域，且关键词是计算机科学相关（如LLM、transformer、神经网络、深度学习等），则判定为 {self.IRRELEVANT}
+4. 如果论文分类是 cs.RO（机器人）但核心内容是计算机视觉/深度学习，则判定为 {self.RELEVANT}
+5. 如果只是在背景介绍中提到关键词，但核心研究内容不相关，则判定为 {self.IRRELEVANT}
+6. 如果论文标题和摘要都显示与关键词高度相关，则判定为 {self.RELEVANT}
+
+注意：必须严格只输出 {self.RELEVANT} 或 {self.IRRELEVANT}，不要添加任何其他内容！"""
+
+        user_prompt = f"""请判断以下论文是否与关键词 "{keywords_str}" 高度相关：
+
+论文标题: {paper.title}
+
+论文分类: {categories_str}
+
+论文摘要:
+{paper.summary}
+
+只输出 {self.RELEVANT} 或 {self.IRRELEVANT}，不要输出其他任何内容！"""
+
+        try:
+            print(f"    筛选论文 {paper.arxiv_id}...")
+            result = self.client.chat(
+                prompt=user_prompt,
+                system_prompt=system_prompt,
+                temperature=0.1,
+                max_tokens=20,
+                use_vision_model=False,
+            )
+
+            result = result.strip().upper()
+            result = re.sub(r'[^A-Z_]', '', result)
+
+            print(f"    AI响应: '{result}'")
+
+            if self.IRRELEVANT == result or self.IRRELEVANT in result:
+                return False, f"AI判定为不相关"
+            elif self.RELEVANT == result or self.RELEVANT in result:
+                return True, f"AI判定为相关"
+            else:
+                print(f"    警告: 无法解析AI响应，默认判定为相关")
+                return True, f"无法解析响应，默认相关"
+
+        except Exception as e:
+            print(f"    筛选过程出错: {e}，默认判定为相关")
+            import traceback
+            traceback.print_exc()
+            return True, f"筛选出错，默认相关"
 
 
 class PDFExtractor:
@@ -100,122 +347,23 @@ class PDFExtractor:
         return None
 
 
-class SiliconFlowClient:
-    BASE_URL = "https://api.siliconflow.cn/v1/chat/completions"
-
-    def __init__(self, api_key: str, model: str = "Qwen/Qwen2.5-7B-Instruct", timeout: int = 180, max_retries: int = 3):
-        self.api_key = api_key
-        self.model = model
-        self.timeout = timeout
-        self.max_retries = max_retries
-        self.headers = {
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json",
-        }
-        self.retry_manager = RetryManager(max_retries=max_retries)
-
-    def chat(
-        self,
-        prompt: str,
-        system_prompt: str = "你是一个专业的学术论文助手。",
-        temperature: float = 0.3,
-        max_tokens: int = 4096,
-    ) -> str:
-        def _make_request():
-            payload = {
-                "model": self.model,
-                "messages": [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": prompt},
-                ],
-                "temperature": temperature,
-                "max_tokens": max_tokens,
-            }
-
-            response = requests.post(
-                self.BASE_URL,
-                headers=self.headers,
-                json=payload,
-                timeout=self.timeout,
-            )
-            response.raise_for_status()
-
-            result = response.json()
-            content = result["choices"][0]["message"]["content"]
-
-            content = content.encode('utf-8', errors='ignore').decode('utf-8')
-            content = content.replace('\ufffd', '')
-
-            return content
-
-        return self.retry_manager.execute(_make_request)
-
-
-class PaperFilter:
-    RELEVANT = "relevant"
-    IRRELEVANT = "irrelevant"
-
-    def __init__(self, siliconflow_client: SiliconFlowClient):
-        self.client = siliconflow_client
-
-    def is_relevant(self, paper: Paper, target_keywords: List[str]) -> Tuple[bool, str]:
-        if not paper.summary or len(paper.summary.strip()) < 50:
-            print(f"    警告: 论文 {paper.arxiv_id} 摘要过短，跳过筛选")
-            return True, "摘要过短，跳过筛选"
-
-        keywords_str = ", ".join(target_keywords)
-
-        system_prompt = """你是一个专业的学术论文筛选助手。你的任务是根据论文的标题和摘要，判断这篇论文是否与给定的关键词相关。
-
-判断标准：
-1. 论文主题必须与关键词高度相关
-2. 关键词必须出现在论文的核心研究内容中
-3. 如果论文只是在背景介绍中提到关键词，但核心研究内容不相关，则判定为不相关
-4. 如果论文分类是物理、化学、生物等领域，但关键词是计算机科学（如LLM、transformer、神经网络等），则判定为不相关
-
-请只输出以下格式之一（不要输出其他内容）：
-- RELEVANT: 如果论文与关键词相关
-- IRRELEVANT: 如果论文与关键词不相关"""
-
-        user_prompt = f"""请判断以下论文是否与关键词 "{keywords_str}" 相关：
-
-论文标题: {paper.title}
-
-论文分类: {', '.join(paper.categories) if paper.categories else '未知'}
-
-论文摘要:
-{paper.summary}
-
-请只输出 RELEVANT 或 IRRELEVANT。"""
-
-        try:
-            print(f"    筛选论文 {paper.arxiv_id}...")
-            result = self.client.chat(
-                prompt=user_prompt,
-                system_prompt=system_prompt,
-                temperature=0.1,
-                max_tokens=20,
-            )
-
-            result = result.strip().upper()
-
-            if self.IRRELEVANT in result:
-                return False, f"AI判定为不相关 ({result})"
-            elif self.RELEVANT in result:
-                return True, f"AI判定为相关 ({result})"
-            else:
-                print(f"    警告: 无法解析AI响应 '{result}'，默认判定为相关")
-                return True, f"无法解析响应，默认相关"
-
-        except Exception as e:
-            print(f"    筛选过程出错: {e}，默认判定为相关")
-            return True, f"筛选出错，默认相关"
-
-
 class Summarizer:
-    def __init__(self, siliconflow_api_key: str, prompt_dir: str = "./markdown"):
+    def __init__(
+        self,
+        siliconflow_api_key: str,
+        prompt_dir: str = "./markdown",
+        use_vision_mode: bool = False,
+        text_model: str = "Qwen/Qwen2.5-7B-Instruct",
+        vision_model: str = "Qwen/Qwen2-VL-72B-Instruct",
+    ):
+        self.use_vision_mode = use_vision_mode
         self.pdf_extractor = PDFExtractor()
-        self.siliconflow_client = SiliconFlowClient(siliconflow_api_key)
+        self.image_converter = ImageConverter(max_pages=10)
+        self.siliconflow_client = SiliconFlowClient(
+            api_key=siliconflow_api_key,
+            text_model=text_model,
+            vision_model=vision_model,
+        )
         self.paper_filter = PaperFilter(self.siliconflow_client)
         self.prompt_dir = prompt_dir
         self._load_prompts()
@@ -240,45 +388,53 @@ class Summarizer:
 
     def _get_default_prompt(self, prompt_type: str) -> str:
         defaults = {
-            "summary_prompt.txt": """请为以下论文提供一个简洁的摘要总结。要求：
+            "summary_prompt.txt": """请为以下学术论文提供一个简洁的摘要总结。要求：
 1. 用中文回答
 2. 突出论文的核心贡献和创新点
-3. 不要超过300字
+3. 总结要准确、全面，不要遗漏关键信息
+4. 字数控制在300-500字之间
 
-论文内容：
-{content}""",
+请用清晰的段落组织你的回答。""",
+
             "technical_route_prompt.txt": """请分析以下论文的技术路线。要求：
 1. 用中文回答
-2. 分点列出技术路线的关键步骤
-3. 说明各步骤之间的逻辑关系
-4. 指出技术路线的创新性
+2. 分点列出技术路线的关键步骤（使用1. 2. 3. 格式）
+3. 说明各步骤之间的逻辑关系和数据流
+4. 指出技术路线的创新性和与现有方法的区别
+5. 如果有架构图或流程图，请描述图中的关键组件和连接
 
-论文内容：
-{content}""",
+请清晰、有条理地组织你的回答。""",
+
             "methodology_prompt.txt": """请分析以下论文的方法论。要求：
 1. 用中文回答
 2. 详细描述论文采用的核心方法和技术
-3. 说明方法的理论基础
-4. 分析方法的优势和局限性
+3. 说明方法的理论基础和数学原理（如有）
+4. 分析方法的优势、局限性和适用场景
+5. 描述方法的实现细节和关键算法步骤
 
-论文内容：
-{content}""",
+请清晰、有条理地组织你的回答。""",
+
             "experiment_prompt.txt": """请分析以下论文的实验方案。要求：
 1. 用中文回答
-2. 列出实验设置（数据集、评价指标、基线方法等）
-3. 总结主要实验结果
-4. 分析实验的有效性和局限性
+2. 列出实验设置：
+   - 数据集（名称、规模、来源）
+   - 评价指标
+   - 基线方法（Baselines）
+   - 实现细节（硬件、框架、超参数等）
+3. 总结主要实验结果和关键发现
+4. 分析实验的有效性、可靠性和局限性
+5. 如果有消融实验（Ablation Study），请分析其结果
 
-论文内容：
-{content}""",
-            "introduction_prompt.txt": """请分析以下论文的Introduction行文逻辑。要求：
+请清晰、有条理地组织你的回答。""",
+
+            "introduction_prompt.txt": """请分析以下论文的Introduction（引言）部分的行文逻辑。要求：
 1. 用中文回答
-2. 梳理作者如何提出问题和背景
-3. 分析作者如何引出研究动机
-4. 说明论文贡献的组织方式
+2. 梳理作者如何提出研究背景和问题
+3. 分析作者如何引出研究动机和挑战
+4. 说明论文贡献的组织方式和阐述顺序
+5. 分析作者如何定位自己的工作与现有研究的关系
 
-论文内容：
-{content}""",
+请清晰、有条理地组织你的回答。""",
         }
         return defaults.get(prompt_type, "")
 
@@ -313,8 +469,6 @@ class Summarizer:
         if not paper.local_pdf_path:
             raise ValueError(f"Paper {paper.arxiv_id} has no local PDF path")
 
-        full_text = self.pdf_extractor.extract_text(paper.local_pdf_path)
-
         summary_result = {}
         summary_result["arxiv_id"] = paper.arxiv_id
         summary_result["title"] = paper.title
@@ -325,45 +479,113 @@ class Summarizer:
         summary_result["categories"] = paper.categories
         summary_result["original_abstract"] = paper.summary
 
-        print(f"Summarizing paper: {paper.arxiv_id}")
+        print(f"  总结论文: {paper.arxiv_id}")
 
-        if len(full_text) > 8000:
-            full_text = full_text[:8000] + "\n...（内容已截断）"
+        if self.use_vision_mode:
+            return self._summarize_with_vision(paper, summary_result)
+        else:
+            return self._summarize_with_text(paper, summary_result)
+
+    def _summarize_with_text(self, paper: Paper, summary_result: Dict) -> Dict:
+        full_text = self.pdf_extractor.extract_text(paper.local_pdf_path)
+
+        if len(full_text) > 12000:
+            full_text = full_text[:12000] + "\n...（内容已截断）"
+
+        print("    使用文本模式总结...")
+
+        system_prompt = "你是一个专业的学术论文助手，擅长总结和分析学术论文。请用中文回答，确保回答准确、清晰、有条理。"
 
         summary = self.siliconflow_client.chat(
-            prompt=self.prompts["summary_prompt.txt"].format(content=full_text),
-            system_prompt="你是一个专业的学术论文助手，擅长总结和分析学术论文。",
+            prompt=self.prompts["summary_prompt.txt"] + "\n\n论文内容：\n" + full_text,
+            system_prompt=system_prompt,
+            use_vision_model=False,
         )
         summary_result["summary"] = summary
-        print("  - Summary completed")
+        print("      ✓ 摘要总结完成")
 
         technical_route = self.siliconflow_client.chat(
-            prompt=self.prompts["technical_route_prompt.txt"].format(content=full_text),
-            system_prompt="你是一个专业的学术论文助手，擅长分析论文的技术路线。",
+            prompt=self.prompts["technical_route_prompt.txt"] + "\n\n论文内容：\n" + full_text,
+            system_prompt=system_prompt,
+            use_vision_model=False,
         )
         summary_result["technical_route"] = technical_route
-        print("  - Technical route completed")
+        print("      ✓ 技术路线分析完成")
 
         methodology = self.siliconflow_client.chat(
-            prompt=self.prompts["methodology_prompt.txt"].format(content=full_text),
-            system_prompt="你是一个专业的学术论文助手，擅长分析论文的方法论。",
+            prompt=self.prompts["methodology_prompt.txt"] + "\n\n论文内容：\n" + full_text,
+            system_prompt=system_prompt,
+            use_vision_model=False,
         )
         summary_result["methodology"] = methodology
-        print("  - Methodology completed")
+        print("      ✓ 方法论分析完成")
 
         experiment = self.siliconflow_client.chat(
-            prompt=self.prompts["experiment_prompt.txt"].format(content=full_text),
-            system_prompt="你是一个专业的学术论文助手，擅长分析论文的实验方案。",
+            prompt=self.prompts["experiment_prompt.txt"] + "\n\n论文内容：\n" + full_text,
+            system_prompt=system_prompt,
+            use_vision_model=False,
         )
         summary_result["experiment"] = experiment
-        print("  - Experiment completed")
+        print("      ✓ 实验方案分析完成")
 
         intro_analysis = self.siliconflow_client.chat(
-            prompt=self.prompts["introduction_prompt.txt"].format(content=full_text),
-            system_prompt="你是一个专业的学术论文助手，擅长分析论文的写作结构。",
+            prompt=self.prompts["introduction_prompt.txt"] + "\n\n论文内容：\n" + full_text,
+            system_prompt=system_prompt,
+            use_vision_model=False,
         )
         summary_result["introduction_analysis"] = intro_analysis
-        print("  - Introduction analysis completed")
+        print("      ✓ Introduction分析完成")
+
+        return summary_result
+
+    def _summarize_with_vision(self, paper: Paper, summary_result: Dict) -> Dict:
+        print("    使用视觉模式（多模态）总结...")
+        print("    正在将PDF转换为图像...")
+
+        images = self.image_converter.pdf_to_images(paper.local_pdf_path)
+        print(f"    已转换 {len(images)} 页为图像")
+
+        system_prompt = "你是一个专业的学术论文助手，擅长通过阅读论文图像来总结和分析学术论文。请用中文回答，确保回答准确、清晰、有条理。"
+
+        summary = self.siliconflow_client.chat_with_images(
+            text_prompt=self.prompts["summary_prompt.txt"],
+            images=images,
+            system_prompt=system_prompt,
+        )
+        summary_result["summary"] = summary
+        print("      ✓ 摘要总结完成")
+
+        technical_route = self.siliconflow_client.chat_with_images(
+            text_prompt=self.prompts["technical_route_prompt.txt"],
+            images=images,
+            system_prompt=system_prompt,
+        )
+        summary_result["technical_route"] = technical_route
+        print("      ✓ 技术路线分析完成")
+
+        methodology = self.siliconflow_client.chat_with_images(
+            text_prompt=self.prompts["methodology_prompt.txt"],
+            images=images,
+            system_prompt=system_prompt,
+        )
+        summary_result["methodology"] = methodology
+        print("      ✓ 方法论分析完成")
+
+        experiment = self.siliconflow_client.chat_with_images(
+            text_prompt=self.prompts["experiment_prompt.txt"],
+            images=images,
+            system_prompt=system_prompt,
+        )
+        summary_result["experiment"] = experiment
+        print("      ✓ 实验方案分析完成")
+
+        intro_analysis = self.siliconflow_client.chat_with_images(
+            text_prompt=self.prompts["introduction_prompt.txt"],
+            images=images,
+            system_prompt=system_prompt,
+        )
+        summary_result["introduction_analysis"] = intro_analysis
+        print("      ✓ Introduction分析完成")
 
         return summary_result
 

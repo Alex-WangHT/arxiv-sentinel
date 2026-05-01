@@ -19,7 +19,13 @@ class arXivSentinel:
         self._setup_directories()
 
         self.sniffer = ArXivSniffer(self.config.PDF_CACHE_DIR)
-        self.summarizer = Summarizer(self.config.SILICONFLOW_API_KEY, self.config.PROMPT_DIR)
+        self.summarizer = Summarizer(
+            siliconflow_api_key=self.config.SILICONFLOW_API_KEY,
+            prompt_dir=self.config.PROMPT_DIR,
+            use_vision_mode=self.config.USE_VISION_MODE,
+            text_model=self.config.SILICONFLOW_MODEL,
+            vision_model=self.config.VISION_MODEL,
+        )
         self.publisher = MkDocsPublisher(
             working_dir=self.config.MKDOCS_WORKING_DIR,
             repo_url=self.config.MKDOCS_REPO_URL,
@@ -52,6 +58,11 @@ class arXivSentinel:
         print(f"关键词: {', '.join(keywords)}")
         print(f"最大结果数: {max_results}")
         print(f"部署模式: {self.config.MKDOCS_DEPLOY_MODE}")
+        print(f"文本模型: {self.config.SILICONFLOW_MODEL}")
+        if self.config.USE_VISION_MODE:
+            print(f"视觉模式: 启用 ({self.config.VISION_MODEL})")
+        else:
+            print(f"视觉模式: 禁用")
         print(f"{'='*60}")
 
         print("\n[1/7] 搜索arXiv论文...")
@@ -168,6 +179,8 @@ def main():
     parser.add_argument("--serve", action="store_true", help="启动MkDocs本地服务器预览")
     parser.add_argument("--port", "-p", type=int, default=8000, help="本地服务器端口（默认: 8000）")
     parser.add_argument("--no-filter", action="store_true", help="禁用AI论文筛选")
+    parser.add_argument("--use-vision", action="store_true", help="启用视觉模式（多模态模型处理PDF图像）")
+    parser.add_argument("--no-vision", action="store_true", help="禁用视觉模式（使用文本提取）")
 
     args = parser.parse_args()
 
@@ -175,6 +188,12 @@ def main():
 
     if args.no_filter:
         sentinel.config.ENABLE_LLM_FILTER = False
+
+    if args.use_vision:
+        sentinel.config.USE_VISION_MODE = True
+
+    if args.no_vision:
+        sentinel.config.USE_VISION_MODE = False
 
     if args.serve:
         sentinel.publisher.initialize_project()
