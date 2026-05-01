@@ -1,12 +1,40 @@
 import os
 import re
 import json
+import time
 import requests
 import fitz
-from typing import Dict, Optional, List
+from typing import Dict, Optional, List, Tuple
 from datetime import datetime
 
 from .sniffer import Paper
+
+
+class RetryManager:
+    def __init__(self, max_retries: int = 3, initial_delay: float = 1.0, backoff_factor: float = 2.0):
+        self.max_retries = max_retries
+        self.initial_delay = initial_delay
+        self.backoff_factor = backoff_factor
+
+    def execute(self, func, *args, **kwargs):
+        last_exception = None
+        delay = self.initial_delay
+
+        for attempt in range(self.max_retries):
+            try:
+                return func(*args, **kwargs)
+            except (requests.exceptions.Timeout, requests.exceptions.ConnectionError, requests.exceptions.ReadTimeout) as e:
+                last_exception = e
+                if attempt < self.max_retries - 1:
+                    print(f"    重试 {attempt + 1}/{self.max_retries} 后... (等待 {delay}s)")
+                    time.sleep(delay)
+                    delay *= self.backoff_factor
+                else:
+                    raise
+            except Exception as e:
+                raise
+
+        raise last_exception
 
 
 class PDFExtractor:
@@ -19,10 +47,24 @@ class PDFExtractor:
 
         for page_num, page in enumerate(doc):
             page_text = page.get_text()
-            text_parts.append(page_text)
+            if page_text:
+                page_text = self._clean_text(page_text)
+                text_parts.append(page_text)
 
         doc.close()
-        return "\n\n".join(text_parts)
+        full_text = "\n\n".join(text_parts)
+        return self._normalize_encoding(full_text)
+
+    def _clean_text(self, text: str) -> str:
+        text = re.sub(r'\n{3,}', '\n\n', text)
+        text = re.sub(r'[ \t]+', ' ', text)
+        text = re.sub(r'(\n )+', '\n', text)
+        return text.strip()
+
+    def _normalize_encoding(self, text: str) -> str:
+        text = text.encode('utf-8', errors='ignore').decode('utf-8')
+        text = text.replace('\ufffd', '')
+        return text
 
     def extract_section(self, pdf_path: str, section_name: str) -> Optional[str]:
         text = self.extract_text(pdf_path)
@@ -61,36 +103,120 @@ class PDFExtractor:
 class SiliconFlowClient:
     BASE_URL = "https://api.siliconflow.cn/v1/chat/completions"
 
-    def __init__(self, api_key: str, model: str = "Qwen/Qwen2.5-7B-Instruct"):
+    def __init__(self, api_key: str, model: str = "Qwen/Qwen2.5-7B-Instruct", timeout: int = 180, max_retries: int = 3):
         self.api_key = api_key
         self.model = model
+        self.timeout = timeout
+        self.max_retries = max_retries
         self.headers = {
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
         }
+        self.retry_manager = RetryManager(max_retries=max_retries)
 
-    def chat(self, prompt: str, system_prompt: str = "你是一个专业的学术论文助手。", temperature: float = 0.3) -> str:
-        payload = {
-            "model": self.model,
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": prompt},
-            ],
-            "temperature": temperature,
-            "max_tokens": 4096,
-        }
+    def chat(
+        self,
+        prompt: str,
+        system_prompt: str = "你是一个专业的学术论文助手。",
+        temperature: float = 0.3,
+        max_tokens: int = 4096,
+    ) -> str:
+        def _make_request():
+            payload = {
+                "model": self.model,
+                "messages": [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": prompt},
+                ],
+                "temperature": temperature,
+                "max_tokens": max_tokens,
+            }
 
-        response = requests.post(self.BASE_URL, headers=self.headers, json=payload, timeout=120)
-        response.raise_for_status()
+            response = requests.post(
+                self.BASE_URL,
+                headers=self.headers,
+                json=payload,
+                timeout=self.timeout,
+            )
+            response.raise_for_status()
 
-        result = response.json()
-        return result["choices"][0]["message"]["content"]
+            result = response.json()
+            content = result["choices"][0]["message"]["content"]
+
+            content = content.encode('utf-8', errors='ignore').decode('utf-8')
+            content = content.replace('\ufffd', '')
+
+            return content
+
+        return self.retry_manager.execute(_make_request)
+
+
+class PaperFilter:
+    RELEVANT = "relevant"
+    IRRELEVANT = "irrelevant"
+
+    def __init__(self, siliconflow_client: SiliconFlowClient):
+        self.client = siliconflow_client
+
+    def is_relevant(self, paper: Paper, target_keywords: List[str]) -> Tuple[bool, str]:
+        if not paper.summary or len(paper.summary.strip()) < 50:
+            print(f"    警告: 论文 {paper.arxiv_id} 摘要过短，跳过筛选")
+            return True, "摘要过短，跳过筛选"
+
+        keywords_str = ", ".join(target_keywords)
+
+        system_prompt = """你是一个专业的学术论文筛选助手。你的任务是根据论文的标题和摘要，判断这篇论文是否与给定的关键词相关。
+
+判断标准：
+1. 论文主题必须与关键词高度相关
+2. 关键词必须出现在论文的核心研究内容中
+3. 如果论文只是在背景介绍中提到关键词，但核心研究内容不相关，则判定为不相关
+4. 如果论文分类是物理、化学、生物等领域，但关键词是计算机科学（如LLM、transformer、神经网络等），则判定为不相关
+
+请只输出以下格式之一（不要输出其他内容）：
+- RELEVANT: 如果论文与关键词相关
+- IRRELEVANT: 如果论文与关键词不相关"""
+
+        user_prompt = f"""请判断以下论文是否与关键词 "{keywords_str}" 相关：
+
+论文标题: {paper.title}
+
+论文分类: {', '.join(paper.categories) if paper.categories else '未知'}
+
+论文摘要:
+{paper.summary}
+
+请只输出 RELEVANT 或 IRRELEVANT。"""
+
+        try:
+            print(f"    筛选论文 {paper.arxiv_id}...")
+            result = self.client.chat(
+                prompt=user_prompt,
+                system_prompt=system_prompt,
+                temperature=0.1,
+                max_tokens=20,
+            )
+
+            result = result.strip().upper()
+
+            if self.IRRELEVANT in result:
+                return False, f"AI判定为不相关 ({result})"
+            elif self.RELEVANT in result:
+                return True, f"AI判定为相关 ({result})"
+            else:
+                print(f"    警告: 无法解析AI响应 '{result}'，默认判定为相关")
+                return True, f"无法解析响应，默认相关"
+
+        except Exception as e:
+            print(f"    筛选过程出错: {e}，默认判定为相关")
+            return True, f"筛选出错，默认相关"
 
 
 class Summarizer:
     def __init__(self, siliconflow_api_key: str, prompt_dir: str = "./markdown"):
         self.pdf_extractor = PDFExtractor()
         self.siliconflow_client = SiliconFlowClient(siliconflow_api_key)
+        self.paper_filter = PaperFilter(self.siliconflow_client)
         self.prompt_dir = prompt_dir
         self._load_prompts()
 
@@ -155,6 +281,33 @@ class Summarizer:
 {content}""",
         }
         return defaults.get(prompt_type, "")
+
+    def filter_papers(self, papers: List[Paper], keywords: List[str]) -> Tuple[List[Paper], List[Paper]]:
+        if not keywords:
+            return papers, []
+
+        relevant_papers = []
+        irrelevant_papers = []
+
+        print(f"\n开始筛选论文 (共 {len(papers)} 篇)...")
+        print(f"目标关键词: {', '.join(keywords)}")
+
+        for i, paper in enumerate(papers):
+            print(f"\n  [{i+1}/{len(papers)}] 检查: {paper.arxiv_id}")
+            print(f"      标题: {paper.title[:60]}...")
+            print(f"      分类: {', '.join(paper.categories) if paper.categories else '未知'}")
+
+            is_relevant, reason = self.paper_filter.is_relevant(paper, keywords)
+
+            if is_relevant:
+                print(f"      ✓ 相关 ({reason})")
+                relevant_papers.append(paper)
+            else:
+                print(f"      ✗ 不相关 ({reason})")
+                irrelevant_papers.append(paper)
+
+        print(f"\n筛选完成: 相关 {len(relevant_papers)} 篇，不相关 {len(irrelevant_papers)} 篇")
+        return relevant_papers, irrelevant_papers
 
     def summarize(self, paper: Paper) -> Dict:
         if not paper.local_pdf_path:
