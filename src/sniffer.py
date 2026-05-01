@@ -1,3 +1,25 @@
+"""
+arXiv Sentinel - 论文嗅探模块
+================================
+本模块提供从arXiv搜索、下载和管理学术论文的功能。
+
+主要类：
+- Paper: 表示一篇arXiv论文的数据结构
+- SearchStrategy: 搜索策略枚举
+- ArXivSniffer: arXiv API客户端，提供搜索、下载等功能
+
+使用示例：
+    from src.sniffer import ArXivSniffer, SearchStrategy
+    
+    sniffer = ArXivSniffer(cache_dir="./pdf_cache")
+    papers = sniffer.search(
+        keywords=["LLM", "transformer"],
+        categories=["cs.CL", "cs.AI"],
+        max_results=10,
+        search_strategy=SearchStrategy.MODERATE
+    )
+"""
+
 import os
 import re
 import requests
@@ -8,6 +30,34 @@ from urllib.parse import quote, urlencode
 
 
 class Paper:
+    """
+    表示一篇arXiv论文的数据结构。
+    
+    该类封装了arXiv论文的所有元数据信息，包括标题、作者、摘要、
+    分类、PDF链接等。同时还记录了本地下载的PDF文件路径。
+    
+    Attributes:
+        title (str): 论文标题
+        authors (List[str]): 作者列表
+        summary (str): 论文摘要
+        arxiv_id (str): arXiv ID，如 "2401.12345"
+        pdf_url (str): PDF文件的下载链接
+        published (str): 发布时间字符串
+        categories (List[str]): 论文分类列表，如 ["cs.CL", "cs.AI"]
+        local_pdf_path (Optional[str]): 本地下载的PDF文件路径，未下载则为None
+    
+    Example:
+        paper = Paper(
+            title="Attention Is All You Need",
+            authors=["Ashish Vaswani", "Noam Shazeer"],
+            summary="The dominant sequence transduction models...",
+            arxiv_id="1706.03762",
+            pdf_url="https://arxiv.org/pdf/1706.03762.pdf",
+            published="2017-06-12",
+            categories=["cs.CL", "cs.AI"]
+        )
+    """
+    
     def __init__(
         self,
         title: str,
@@ -18,6 +68,18 @@ class Paper:
         published: str,
         categories: List[str],
     ):
+        """
+        初始化Paper实例。
+        
+        Args:
+            title: 论文标题
+            authors: 作者列表
+            summary: 论文摘要
+            arxiv_id: arXiv ID
+            pdf_url: PDF下载链接
+            published: 发布时间
+            categories: 分类列表
+        """
         self.title = title
         self.authors = authors
         self.summary = summary
@@ -29,16 +91,88 @@ class Paper:
 
 
 class SearchStrategy:
+    """
+    搜索策略枚举类，定义三种不同的搜索严格程度。
+    
+    该类用于控制arXiv API搜索的严格程度，影响关键词匹配方式。
+    
+    Attributes:
+        STRICT (str): 严格策略，使用精确短语匹配（带双引号）
+            - 查询示例: all:"LLM" 或 ti:"large language model"
+            - 适用场景: 需要精确匹配特定术语时
+        
+        MODERATE (str): 中等策略（默认），使用普通关键词匹配
+            - 查询示例: all:LLM 或 ti:transformer
+            - 适用场景: 大多数常规搜索场景
+        
+        BROAD (str): 宽松策略，搜索所有字段
+            - 查询示例: all:LLM
+            - 适用场景: 需要尽可能多的结果时
+    
+    Example:
+        from src.sniffer import SearchStrategy
+        
+        # 使用严格策略
+        strategy = SearchStrategy.STRICT
+        
+        # 使用默认策略
+        strategy = SearchStrategy.MODERATE
+    """
+    
     STRICT = "strict"
     MODERATE = "moderate"
     BROAD = "broad"
 
 
 class ArXivSniffer:
+    """
+    arXiv API客户端，提供论文搜索、下载和管理功能。
+    
+    该类封装了与arXiv API的交互，支持通过关键词和分类搜索论文，
+    下载PDF文件，以及管理本地缓存。
+    
+    Attributes:
+        ARXIV_API_URL (str): arXiv API的基础URL
+        PDF_BASE_URL (str): arXiv PDF下载的基础URL
+        cache_dir (str): PDF文件缓存目录
+    
+    Example:
+        sniffer = ArXivSniffer(cache_dir="./pdf_cache")
+        
+        # 搜索论文
+        papers = sniffer.search(
+            keywords=["LLM", "transformer"],
+            categories=["cs.CL", "cs.AI"],
+            max_results=10
+        )
+        
+        # 下载PDF
+        for paper in papers:
+            sniffer.download_pdf(paper)
+        
+        # 使用完成后清理
+        sniffer.cleanup_all_pdfs(papers)
+    """
+    
     ARXIV_API_URL = "http://export.arxiv.org/api/query"
     PDF_BASE_URL = "https://arxiv.org/pdf"
 
     def __init__(self, cache_dir: str = "./pdf_cache"):
+        """
+        初始化ArXivSniffer实例。
+        
+        创建缓存目录（如果不存在），并设置基本配置。
+        
+        Args:
+            cache_dir: PDF文件缓存目录路径，默认为 "./pdf_cache"
+        
+        Example:
+            # 使用默认缓存目录
+            sniffer = ArXivSniffer()
+            
+            # 使用自定义缓存目录
+            sniffer = ArXivSniffer(cache_dir="/tmp/arxiv_pdfs")
+        """
         self.cache_dir = cache_dir
         os.makedirs(cache_dir, exist_ok=True)
 
@@ -50,6 +184,41 @@ class ArXivSniffer:
         use_or_for_categories: bool = False,
         search_strategy: str = SearchStrategy.MODERATE,
     ) -> str:
+        """
+        构建arXiv API的搜索查询字符串。
+        
+        根据提供的关键词、分类和搜索策略，构建符合arXiv API语法的查询字符串。
+        
+        查询语法说明：
+        - all:keyword - 搜索所有字段
+        - ti:keyword - 仅搜索标题
+        - abs:keyword - 仅搜索摘要
+        - cat:category - 按分类搜索
+        - "phrase" - 精确短语匹配（带双引号）
+        
+        Args:
+            keywords: 搜索关键词列表，如 ["LLM", "transformer"]
+            categories: arXiv分类列表，如 ["cs.CL", "cs.AI"]，为None则不限制分类
+            search_all_fields: 是否搜索所有字段，False则仅搜索标题和摘要
+            use_or_for_categories: 关键词和分类的逻辑关系，True为OR，False为AND
+            search_strategy: 搜索策略，可选 SearchStrategy.STRICT/MODERATE/BROAD
+        
+        Returns:
+            构建完成的查询字符串，可直接用于arXiv API
+        
+        Raises:
+            ValueError: 当keywords和categories都为空时抛出
+        
+        Example:
+            query = sniffer.build_query(
+                keywords=["LLM", "transformer"],
+                categories=["cs.CL", "cs.AI"],
+                search_all_fields=False,
+                use_or_for_categories=False,
+                search_strategy=SearchStrategy.MODERATE
+            )
+            # 输出类似: ((ti:LLM OR abs:LLM) OR (ti:transformer OR abs:transformer)) AND (cat:cs.CL OR cat:cs.AI)
+        """
         if not keywords and not categories:
             raise ValueError("必须提供至少一个关键词或分类")
 
@@ -118,6 +287,46 @@ class ArXivSniffer:
         use_or_for_categories: bool = False,
         search_strategy: str = SearchStrategy.MODERATE,
     ) -> List[Paper]:
+        """
+        使用arXiv API搜索论文。
+        
+        该方法构建查询字符串，调用arXiv API，解析返回的Atom Feed，
+        并返回Paper对象列表。搜索结果默认按提交时间降序排列。
+        
+        Args:
+            keywords: 搜索关键词列表
+            categories: arXiv分类列表，为None则不限制分类
+            max_results: 返回的最大结果数，默认为10
+            sort_by: 排序方式，可选 "submittedDate"（提交时间）或 "relevance"（相关度）
+            search_all_fields: 是否搜索所有字段，False则仅搜索标题和摘要
+            use_or_for_categories: 关键词和分类的逻辑关系，True为OR，False为AND
+            search_strategy: 搜索策略，可选 SearchStrategy.STRICT/MODERATE/BROAD
+        
+        Returns:
+            Paper对象列表，按提交时间降序排列。如果搜索失败或无结果，返回空列表。
+        
+        Example:
+            # 基本搜索
+            papers = sniffer.search(
+                keywords=["LLM", "transformer"],
+                categories=["cs.CL", "cs.AI"],
+                max_results=5
+            )
+            
+            # 宽松搜索（OR逻辑）
+            papers = sniffer.search(
+                keywords=["LLM"],
+                categories=["cs.CL", "cs.AI"],
+                use_or_for_categories=True,
+                search_all_fields=True
+            )
+            
+            # 按相关度排序
+            papers = sniffer.search(
+                keywords=["attention mechanism"],
+                sort_by="relevance"
+            )
+        """
         query = self.build_query(
             keywords=keywords,
             categories=categories,
@@ -209,12 +418,53 @@ class ArXivSniffer:
             return []
 
     def _extract_arxiv_id(self, entry_id: str) -> str:
+        """
+        从arXiv条目ID中提取数字ID。
+        
+        内部方法，用于解析arXiv API返回的条目ID。
+        
+        arXiv ID格式：
+        - 新格式: http://arxiv.org/abs/2401.12345v1 -> 2401.12345
+        - 旧格式: http://arxiv.org/abs/hep-th/0412015v1 -> hep-th/0412015
+        
+        Args:
+            entry_id: arXiv API返回的完整条目ID URL
+        
+        Returns:
+            提取后的纯数字ID或分类前缀+数字ID
+        
+        Example:
+            id = sniffer._extract_arxiv_id("http://arxiv.org/abs/2401.12345v1")
+            # 输出: "2401.12345"
+        """
         match = re.search(r"(\d+\.\d+)", entry_id)
         if match:
             return match.group(1)
         return entry_id.split("/")[-1]
 
     def download_pdf(self, paper: Paper) -> str:
+        """
+        下载单篇论文的PDF文件。
+        
+        从arXiv下载PDF文件到缓存目录，并更新Paper对象的local_pdf_path属性。
+        如果文件已存在，则直接返回已存在的路径。
+        
+        Args:
+            paper: Paper对象，必须包含有效的pdf_url
+        
+        Returns:
+            本地PDF文件的完整路径
+        
+        Raises:
+            requests.exceptions.HTTPError: 当下载失败时抛出
+            requests.exceptions.Timeout: 当下载超时时抛出
+        
+        Example:
+            paper = papers[0]
+            pdf_path = sniffer.download_pdf(paper)
+            print(f"PDF已保存到: {pdf_path}")
+            # paper.local_pdf_path 现在包含下载路径
+        """
         pdf_path = os.path.join(self.cache_dir, f"{paper.arxiv_id}.pdf")
 
         if os.path.exists(pdf_path):
@@ -233,6 +483,23 @@ class ArXivSniffer:
         return pdf_path
 
     def download_pdfs(self, papers: List[Paper]) -> List[str]:
+        """
+        批量下载多篇论文的PDF文件。
+        
+        遍历Paper列表，逐个调用download_pdf()方法下载PDF。
+        如果某个论文下载失败，会打印错误信息但继续下载其他论文。
+        
+        Args:
+            papers: Paper对象列表
+        
+        Returns:
+            成功下载的PDF文件路径列表
+        
+        Example:
+            papers = sniffer.search(keywords=["LLM"], max_results=5)
+            downloaded = sniffer.download_pdfs(papers)
+            print(f"成功下载 {len(downloaded)} 个PDF文件")
+        """
         downloaded_paths = []
         for paper in papers:
             try:
@@ -243,6 +510,23 @@ class ArXivSniffer:
         return downloaded_paths
 
     def cleanup_pdf(self, paper: Paper) -> bool:
+        """
+        清理单篇论文的本地PDF缓存。
+        
+        删除Paper对象对应的本地PDF文件，并将local_pdf_path设为None。
+        
+        Args:
+            paper: Paper对象，其local_pdf_path应指向存在的文件
+        
+        Returns:
+            成功删除返回True，文件不存在或删除失败返回False
+        
+        Example:
+            # 处理完论文后清理
+            for paper in papers:
+                if paper.local_pdf_path:
+                    sniffer.cleanup_pdf(paper)
+        """
         if paper.local_pdf_path and os.path.exists(paper.local_pdf_path):
             os.remove(paper.local_pdf_path)
             paper.local_pdf_path = None
@@ -250,6 +534,22 @@ class ArXivSniffer:
         return False
 
     def cleanup_all_pdfs(self, papers: List[Paper]) -> int:
+        """
+        批量清理所有论文的本地PDF缓存。
+        
+        遍历Paper列表，逐个调用cleanup_pdf()方法删除PDF文件。
+        
+        Args:
+            papers: Paper对象列表
+        
+        Returns:
+            成功删除的文件数量
+        
+        Example:
+            # 全部处理完成后一次性清理
+            deleted = sniffer.cleanup_all_pdfs(papers)
+            print(f"已清理 {deleted} 个PDF缓存文件")
+        """
         count = 0
         for paper in papers:
             if self.cleanup_pdf(paper):

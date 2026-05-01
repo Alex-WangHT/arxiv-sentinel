@@ -1,3 +1,38 @@
+"""
+arXiv Sentinel - 主入口模块
+==========================
+本模块提供arXiv Sentinel工具的命令行接口和主程序逻辑。
+
+主要类：
+- arXivSentinel: 主控制器类，整合所有模块功能
+
+主要函数：
+- main(): 命令行入口函数
+
+工作流程：
+1. 搜索arXiv论文
+2. AI筛选（可选）
+3. 下载PDF文件
+4. 生成论文总结
+5. 清理PDF缓存
+6. 准备MkDocs仓库
+7. 构建和部署网站
+
+使用示例：
+    # 命令行使用
+    python -m src.main --config config.json --keywords LLM RAG
+    
+    # 代码中使用
+    from src.main import arXivSentinel
+    
+    # 创建实例并运行
+    sentinel = arXivSentinel(config_file="config.json")
+    processed_count = sentinel.run(
+        keywords=["LLM", "transformer"],
+        max_results=10
+    )
+"""
+
 import os
 import sys
 import argparse
@@ -11,7 +46,65 @@ from .publisher import MkDocsPublisher
 
 
 class arXivSentinel:
+    """
+    arXiv Sentinel主控制器类。
+    
+    整合所有模块功能，提供完整的论文嗅探-总结-发布工作流程。
+    
+    主要职责：
+    1. 初始化配置管理
+    2. 初始化各功能模块（嗅探、总结、发布）
+    3. 执行完整的工作流程
+    4. 提供运行状态反馈
+    
+    Attributes:
+        config_manager (ConfigManager): 配置管理器实例
+        config (Config): 当前配置实例
+        sniffer (ArXivSniffer): 论文嗅探器实例
+        summarizer (Summarizer): 论文总结器实例
+        publisher (MkDocsPublisher): MkDocs发布器实例
+    
+    工作流程：
+        run() 方法执行以下步骤：
+        1. 搜索arXiv论文
+        2. AI论文筛选（可选）
+        3. 下载PDF文件
+        4. 生成论文总结
+        5. 清理PDF缓存
+        6. 准备MkDocs仓库
+        7. 构建和部署网站
+    
+    Example:
+        from src.main import arXivSentinel
+        
+        # 创建实例
+        sentinel = arXivSentinel(config_file="config.json")
+        
+        # 运行完整流程
+        processed_count = sentinel.run(
+            keywords=["LLM", "RAG", "agent"],
+            max_results=15
+        )
+        
+        print(f"成功处理 {processed_count} 篇论文")
+    """
+    
     def __init__(self, config_file: Optional[str] = None):
+        """
+        初始化arXiv Sentinel实例。
+        
+        执行以下步骤：
+        1. 初始化配置管理器
+        2. 验证配置有效性
+        3. 创建必要的目录
+        4. 初始化各功能模块
+        
+        Args:
+            config_file: 配置文件路径，为None则使用默认路径
+        
+        Raises:
+            SystemExit: 如果配置验证失败，程序退出并返回错误码1
+        """
         self.config_manager = ConfigManager(config_file)
         self.config = self.config_manager.get()
 
@@ -34,6 +127,15 @@ class arXivSentinel:
         )
 
     def _validate_config(self):
+        """
+        内部方法：验证配置有效性。
+        
+        调用 ConfigManager.validate() 检查配置。
+        如果存在错误，打印错误信息并退出程序。
+        
+        Raises:
+            SystemExit: 如果配置验证失败，退出码为1
+        """
         errors = self.config_manager.validate()
         if errors:
             for error in errors:
@@ -41,6 +143,14 @@ class arXivSentinel:
             sys.exit(1)
 
     def _setup_directories(self):
+        """
+        内部方法：创建必要的目录。
+        
+        创建以下目录（如果不存在）：
+        - PDF缓存目录
+        - Markdown输出目录
+        - Prompt模板目录
+        """
         dirs_to_create = [
             self.config.PDF_CACHE_DIR,
             self.config.MARKDOWN_OUTPUT_DIR,
@@ -50,6 +160,64 @@ class arXivSentinel:
             os.makedirs(directory, exist_ok=True)
 
     def run(self, keywords: Optional[List[str]] = None, max_results: Optional[int] = None) -> int:
+        """
+        执行完整的arXiv Sentinel工作流程。
+        
+        这是核心方法，整合所有模块功能，执行完整的论文处理流程。
+        
+        工作流程步骤：
+        1. 搜索arXiv论文
+           - 使用配置的关键词、分类、搜索策略
+           - 调用 ArXivSniffer.search()
+        
+        2. AI论文筛选（可选）
+           - 如果 ENABLE_LLM_FILTER=True
+           - 使用LLM基于标题和摘要判断相关性
+           - 调用 Summarizer.filter_papers()
+        
+        3. 下载PDF文件
+           - 为筛选后的论文下载PDF
+           - 调用 ArXivSniffer.download_pdfs()
+        
+        4. 生成论文总结
+           - 对每篇论文进行多维度分析
+           - 生成Markdown格式的总结文档
+           - 调用 Summarizer.summarize()
+        
+        5. 清理PDF缓存
+           - 删除已处理的PDF文件
+           - 调用 ArXivSniffer.cleanup_all_pdfs()
+        
+        6. 准备MkDocs仓库
+           - 克隆或拉取远程仓库（根据部署模式）
+           - 初始化MkDocs项目
+           - 调用 MkDocsPublisher.prepare_repository() 和 initialize_project()
+        
+        7. 构建和部署
+           - 复制Markdown文件到项目目录
+           - 更新导航栏
+           - 更新首页统计
+           - 构建MkDocs网站
+           - 部署到GitHub Pages（根据部署模式）
+        
+        Args:
+            keywords: 搜索关键词列表，为None则使用配置中的 KEYWORDS
+            max_results: 最大搜索结果数，为None则使用配置中的 MAX_RESULTS_PER_SEARCH
+        
+        Returns:
+            成功处理并生成总结的论文数量
+        
+        Example:
+            # 使用默认配置运行
+            sentinel = arXivSentinel()
+            count = sentinel.run()
+            
+            # 自定义关键词和数量
+            count = sentinel.run(
+                keywords=["LLM", "RAG", "multi-agent"],
+                max_results=20
+            )
+        """
         keywords = keywords or self.config.KEYWORDS
         max_results = max_results or self.config.MAX_RESULTS_PER_SEARCH
 
@@ -175,6 +343,55 @@ class arXivSentinel:
 
 
 def main():
+    """
+    命令行入口函数。
+    
+    解析命令行参数，创建arXivSentinel实例并执行相应操作。
+    
+    支持的命令行参数：
+    
+    配置相关：
+        --config, -c      配置文件路径
+        --keywords, -k    搜索关键词（覆盖配置文件）
+        --max-results, -n 最大搜索结果数（覆盖配置文件）
+    
+    模式控制：
+        --no-filter       禁用AI论文筛选
+        --use-vision      启用视觉模式（多模态模型处理PDF图像）
+        --no-vision       禁用视觉模式（使用文本提取）
+    
+    搜索策略：
+        --search-strict      使用严格搜索策略（精确短语匹配）
+        --search-moderate    使用中等搜索策略（默认）
+        --search-broad       使用宽松搜索策略
+        --use-or-categories  使用OR连接关键词和分类（更宽松）
+        --use-and-categories 使用AND连接关键词和分类（更严格，默认）
+        --search-all-fields  搜索所有字段（更宽松）
+        --search-title-abstract 仅搜索标题和摘要（更严格，默认）
+    
+    服务器预览：
+        --serve            启动MkDocs本地服务器预览
+        --port, -p         本地服务器端口（默认: 8000）
+    
+    使用示例：
+        # 基本使用
+        python -m src.main
+        
+        # 使用指定配置文件
+        python -m src.main --config config.json
+        
+        # 自定义关键词
+        python -m src.main -k LLM "large language model" RAG
+        
+        # 使用视觉模式
+        python -m src.main --use-vision
+        
+        # 严格搜索策略
+        python -m src.main --search-strict --use-and-categories
+        
+        # 本地预览
+        python -m src.main --serve --port 8080
+    """
     parser = argparse.ArgumentParser(description="arXiv Sentinel - 自动嗅探、总结并发布arXiv论文")
     parser.add_argument("--config", "-c", type=str, help="配置文件路径")
     parser.add_argument("--keywords", "-k", type=str, nargs="+", help="搜索关键词（覆盖配置文件）")
