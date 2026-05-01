@@ -22,7 +22,7 @@
 - [搜索策略](#搜索策略)
 - [部署模式](#部署模式)
 - [常见问题](#常见问题)
-- [开发指南](./DEVELOPMENT.md)
+- [开发指南](./docs/DEVELOPMENT.md)
 
 ---
 
@@ -691,4 +691,4 @@ MIT License
 
 ---
 
-**下一站：[开发指南](./DEVELOPMENT.md)** → 了解如何扩展和开发 arXiv Sentinel
+**下一站：[开发指南](./docs/DEVELOPMENT.md)** → 了解如何扩展和开发 arXiv Sentinel
