@@ -37,6 +37,8 @@ class Config:
     GIT_AUTHOR_NAME: str = "arXiv Sentinel Bot"
     GIT_AUTHOR_EMAIL: str = "bot@arxiv-sentinel.local"
 
+    ENABLE_LLM_FILTER: bool = True
+
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
 
@@ -60,6 +62,7 @@ class Config:
             GIT_COMMIT_MESSAGE=data.get("GIT_COMMIT_MESSAGE", "自动更新: 新增{count}篇论文总结"),
             GIT_AUTHOR_NAME=data.get("GIT_AUTHOR_NAME", "arXiv Sentinel Bot"),
             GIT_AUTHOR_EMAIL=data.get("GIT_AUTHOR_EMAIL", "bot@arxiv-sentinel.local"),
+            ENABLE_LLM_FILTER=data.get("ENABLE_LLM_FILTER", True),
         )
 
 
