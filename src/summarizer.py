@@ -591,41 +591,71 @@ class SiliconFlowClient:
         return content.strip()
 
 
+class RelevanceLevel:
+    """
+    论文相关度分级常量。
+
+    定义四个相关度等级，用于对论文与关键词的匹配程度进行分类。
+
+    Attributes:
+        HIGH (str): 高度相关 - 论文核心贡献与关键词直接相关
+        MEDIUM (str): 中度相关 - 论文与关键词有明确联系但非核心
+        LOW (str): 低度相关 - 论文仅在周边/应用层面涉及关键词
+        IRRELEVANT (str): 不相关 - 论文与关键词无实质关联
+        ORDER (list): 从高到低的相关度排序（用于阈值比较）
+    """
+
+    HIGH = "HIGH"
+    MEDIUM = "MEDIUM"
+    LOW = "LOW"
+    IRRELEVANT = "IRRELEVANT"
+
+    ORDER = ["HIGH", "MEDIUM", "LOW", "IRRELEVANT"]
+
+    @classmethod
+    def is_above_threshold(cls, level: str, min_level: str) -> bool:
+        """
+        判断 level 是否达到或超过 min_level 的相关度要求。
+
+        Args:
+            level: 当前论文的相关度等级
+            min_level: 最低要求的相关度等级
+
+        Returns:
+            True 表示达到要求（应保留），False 表示未达到（应过滤）
+        """
+        try:
+            return cls.ORDER.index(level) <= cls.ORDER.index(min_level)
+        except ValueError:
+            return True  # 无法解析时默认保留
+
+
 class PaperFilter:
     """
     AI论文筛选器。
-    
-    该类使用大模型根据论文的标题、分类和摘要判断论文是否与目标关键词相关。
-    在下载PDF之前进行筛选，可以节省时间和API成本。
-    
+
+    两阶段筛选流程：
+    1. 关键词快速预筛（规则，无LLM调用）：检查标题+摘要中是否含有关键词，
+       未命中任何关键词的论文直接标记为 IRRELEVANT，跳过后续LLM调用。
+    2. LLM相关度分级：对通过预筛的论文，调用LLM将相关度分为
+       HIGH / MEDIUM / LOW / IRRELEVANT 四级。
+
     Attributes:
-        RELEVANT (str): 相关标记
+        RELEVANT (str): 向后兼容标记（任何非IRRELEVANT等级）
         IRRELEVANT (str): 不相关标记
         client (SiliconFlowClient): 硅基流动API客户端实例
-    
-    筛选逻辑：
-    1. 检查摘要长度，过短则跳过筛选
-    2. 调用LLM判断相关性
-    3. 解析LLM响应
-    4. 出错时默认判定为相关（避免漏检）
-    
+
     Example:
-        from src.summarizer import PaperFilter, SiliconFlowClient
-        
         client = SiliconFlowClient(api_key="your-key")
-        filter = PaperFilter(client)
-        
-        # 判断单篇论文
-        is_relevant, reason = filter.is_relevant(paper, ["LLM", "transformer"])
-        
-        # 批量筛选
-        relevant = []
-        for paper in papers:
-            is_rel, reason = filter.is_relevant(paper, keywords)
-            if is_rel:
-                relevant.append(paper)
+        paper_filter = PaperFilter(client)
+
+        # 两阶段筛选
+        if paper_filter.keyword_prefilter(paper, keywords):
+            level, reason = paper_filter.classify_relevance(paper, keywords)
+        else:
+            level, reason = RelevanceLevel.IRRELEVANT, "关键词预筛未通过"
     """
-    
+
     RELEVANT = "RELEVANT"
     IRRELEVANT = "IRRELEVANT"
 
@@ -643,95 +673,87 @@ class PaperFilter:
         """
         self.client = siliconflow_client
         self._system_prompt_template = self._load_system_prompt(prompt_dir)
+        self._user_prompt_template = self._load_user_prompt(prompt_dir)
 
     def _load_system_prompt(self, prompt_dir: str) -> str:
-        """从文件加载筛选器system prompt模板，文件不存在时使用内置默认值。"""
-        filepath = os.path.join(prompt_dir, "system_prompt_filter.md")
+        """从文件加载预筛选 system prompt，路径：prefilter/system/system_prompt.md。"""
+        filepath = os.path.join(prompt_dir, "prefilter", "system", "system_prompt.md")
         if os.path.exists(filepath):
             with open(filepath, "r", encoding="utf-8") as f:
                 return f.read().strip()
         return (
-            f"你是一个严格的学术论文筛选助手。你的任务是根据论文的标题、分类和摘要，"
-            f"判断这篇论文是否与给定的关键词高度相关。\n\n"
-            f"判断规则：\n"
-            f"1. 只输出两个词之一：{self.RELEVANT} 或 {self.IRRELEVANT}\n"
-            f"2. 不要输出任何其他解释、标点或说明文字\n"
-            f"3. 如果论文明确属于物理、化学、生物、医学、机械等非计算机科学领域，"
-            f"且关键词是计算机科学相关（如LLM、transformer、神经网络、深度学习等），"
-            f"则判定为 {self.IRRELEVANT}\n"
-            f"4. 如果论文分类是 cs.RO（机器人）但核心内容是计算机视觉/深度学习，"
-            f"则判定为 {self.RELEVANT}\n"
-            f"5. 如果只是在背景介绍中提到关键词，但核心研究内容不相关，"
-            f"则判定为 {self.IRRELEVANT}\n"
-            f"6. 如果论文标题和摘要都显示与关键词高度相关，则判定为 {self.RELEVANT}\n\n"
-            f"注意：必须严格只输出 {self.RELEVANT} 或 {self.IRRELEVANT}，不要添加任何其他内容！"
+            "你是一个严格的学术论文相关度分级助手。你的任务是根据论文的标题、分类和摘要，"
+            "将论文与给定关键词的相关程度分为四个等级：HIGH、MEDIUM、LOW 或 IRRELEVANT。\n\n"
+            "判断规则：\n"
+            "1. 只输出四个词之一：HIGH、MEDIUM、LOW 或 IRRELEVANT\n"
+            "2. 不要输出任何其他解释、标点或说明文字\n"
+            "3. 如果论文明确属于物理、化学、生物、医学、机械等非计算机科学领域，"
+            "且关键词是计算机科学相关（如LLM、transformer、神经网络、深度学习等），"
+            "则判定为 IRRELEVANT\n"
+            "4. 如果论文分类是 cs.RO（机器人）但核心内容是计算机视觉/深度学习，"
+            "则判定为 MEDIUM 或以上\n"
+            "5. 如果只是在背景介绍中提到关键词，但核心研究内容不相关，"
+            "则判定为 LOW 或 IRRELEVANT\n"
+            "6. 如果论文标题和摘要都显示与关键词高度相关，则判定为 HIGH\n\n"
+            "注意：必须严格只输出 HIGH、MEDIUM、LOW 或 IRRELEVANT，不要添加任何其他内容！"
         )
 
-    def is_relevant(self, paper: Paper, target_keywords: List[str]) -> Tuple[bool, str]:
+    def _load_user_prompt(self, prompt_dir: str) -> str:
+        """从文件加载预筛选 user prompt，路径：prefilter/user/user_prompt.md。
+
+        模板占位符：{keywords}、{title}、{categories}、{abstract}
         """
-        判断论文是否与目标关键词相关。
-        
-        该方法会：
-        1. 检查论文摘要是否足够长（至少30字符）
-        2. 构建提示词，包含论文标题、分类、摘要
-        3. 调用LLM进行相关性判断
-        4. 解析LLM响应
-        
-        判断规则（通过提示词传递给LLM）：
-        - 非CS领域（物理、化学、生物等）+ CS关键词 = 不相关
-        - cs.RO（机器人）但核心是计算机视觉/深度学习 = 相关
-        - 仅背景介绍提到关键词，核心内容不相关 = 不相关
-        - 标题和摘要都显示高度相关 = 相关
-        
+        filepath = os.path.join(prompt_dir, "prefilter", "user", "user_prompt.md")
+        if os.path.exists(filepath):
+            with open(filepath, "r", encoding="utf-8") as f:
+                return f.read().strip()
+        return (
+            "请根据以下目标关键词，对论文的标题和摘要进行相关度分级。\n\n"
+            "目标关键词: {keywords}\n\n"
+            "论文标题: {title}\n\n"
+            "论文分类: {categories}\n\n"
+            "论文摘要:\n{abstract}\n\n"
+            "只输出四个等级之一：HIGH、MEDIUM、LOW 或 IRRELEVANT，不要输出其他任何内容！"
+        )
+
+    def classify_relevance(self, paper: Paper, target_keywords: List[str]) -> Tuple[str, str]:
+        """
+        使用LLM将论文相关度分为四个等级。
+
+        将关键词、标题、分类、摘要一并送入LLM，输出 HIGH / MEDIUM / LOW / IRRELEVANT 之一。
+        提示词模板从 prompts/prefilter_prompt.md 加载（含 {keywords}、{title}、
+        {categories}、{abstract} 占位符），文件不存在时使用内置默认值。
+
         Args:
-            paper: Paper对象，需要有title、categories、summary属性
+            paper: Paper对象，需要有 title、categories、summary 属性
             target_keywords: 目标关键词列表
-        
+
         Returns:
-            元组 (is_relevant, reason):
-            - is_relevant: 是否相关，布尔值
-            - reason: 判定原因的描述字符串
-        
+            元组 (level, reason):
+            - level: RelevanceLevel 常量之一
+            - reason: 判定原因描述
+
         Example:
-            # 基本用法
-            is_relevant, reason = filter.is_relevant(paper, ["LLM", "transformer"])
-            if is_relevant:
-                print(f"相关论文: {paper.title}")
-            else:
-                print(f"跳过不相关论文: {reason}")
-            
-            # 处理摘要过短的情况
-            if paper.summary and len(paper.summary) > 100:
-                is_relevant, reason = filter.is_relevant(paper, keywords)
-            else:
-                # 摘要太短，自行判断
-                is_relevant = any(kw.lower() in paper.title.lower() for kw in keywords)
+            level, reason = paper_filter.classify_relevance(paper, ["LLM", "transformer"])
+            if RelevanceLevel.is_above_threshold(level, "MEDIUM"):
+                print(f"保留: {paper.title} [{level}]")
         """
         if not paper.summary or len(paper.summary.strip()) < 30:
-            print(f"    警告: 论文 {paper.arxiv_id} 摘要过短，跳过筛选")
-            return True, "摘要过短，跳过筛选"
+            print(f"    警告: 论文 {paper.arxiv_id} 摘要过短，跳过LLM分级")
+            return RelevanceLevel.LOW, "摘要过短，跳过LLM分级"
 
-        keywords_str = ", ".join(target_keywords)
-        categories_str = ", ".join(paper.categories) if paper.categories else "未知"
-
-        system_prompt = self._system_prompt_template
-
-        user_prompt = f"""请判断以下论文是否与关键词 "{keywords_str}" 高度相关：
-
-论文标题: {paper.title}
-
-论文分类: {categories_str}
-
-论文摘要:
-{paper.summary}
-
-只输出 {self.RELEVANT} 或 {self.IRRELEVANT}，不要输出其他任何内容！"""
+        user_prompt = self._user_prompt_template.format(
+            keywords=", ".join(target_keywords),
+            title=paper.title,
+            categories=", ".join(paper.categories) if paper.categories else "未知",
+            abstract=paper.summary,
+        )
 
         try:
-            print(f"    筛选论文 {paper.arxiv_id}...")
+            print(f"    分级论文 {paper.arxiv_id}...")
             result = self.client.chat(
                 prompt=user_prompt,
-                system_prompt=system_prompt,
+                system_prompt=self._system_prompt_template,
                 temperature=0.1,
                 max_tokens=20,
                 use_vision_model=False,
@@ -742,19 +764,32 @@ class PaperFilter:
 
             print(f"    AI响应: '{result}'")
 
-            if self.IRRELEVANT == result or self.IRRELEVANT in result:
-                return False, f"AI判定为不相关"
-            elif self.RELEVANT == result or self.RELEVANT in result:
-                return True, f"AI判定为相关"
-            else:
-                print(f"    警告: 无法解析AI响应，默认判定为相关")
-                return True, f"无法解析响应，默认相关"
+            for level in [RelevanceLevel.HIGH, RelevanceLevel.MEDIUM, RelevanceLevel.LOW, RelevanceLevel.IRRELEVANT]:
+                if level in result:
+                    return level, f"AI分级: {level}"
+
+            print(f"    警告: 无法解析AI响应，默认判定为 LOW")
+            return RelevanceLevel.LOW, "无法解析响应，默认 LOW"
 
         except Exception as e:
-            print(f"    筛选过程出错: {e}，默认判定为相关")
-            import traceback
-            traceback.print_exc()
-            return True, f"筛选出错，默认相关"
+            print(f"    分级过程出错: {e}，默认判定为 LOW")
+            return RelevanceLevel.LOW, "分级出错，默认 LOW"
+
+    def is_relevant(self, paper: Paper, target_keywords: List[str]) -> Tuple[bool, str]:
+        """
+        向后兼容接口：判断论文是否相关。
+
+        内部调用 classify_relevance，将非 IRRELEVANT 的等级视为相关。
+
+        Args:
+            paper: Paper对象
+            target_keywords: 目标关键词列表
+
+        Returns:
+            元组 (is_relevant, reason)
+        """
+        level, reason = self.classify_relevance(paper, target_keywords)
+        return level != RelevanceLevel.IRRELEVANT, reason
 
 
 class PDFExtractor:
@@ -1069,48 +1104,48 @@ class Summarizer:
         如果文件不存在，会使用内置的默认模板。
         """
         self.prompts = {}
-        prompt_files = [
-            "system_prompt_text.md",
-            "system_prompt_vision.md",
-            "system_prompt_fulltext_filter.md",
-            "fulltext_filter_prompt.md",
-            "related_work_prompt.md",
-            "technical_route_prompt.md",
-            "methodology_prompt.md",
-            "experiment_prompt.md",
-            "introduction_prompt.md",
+        prompts_config = [
+            ("summary_system_text",   "summary/system/system_prompt_text.md"),
+            ("summary_system_vision", "summary/system/system_prompt_vision.md"),
+            ("postfilter_system",     "postfilter/system/system_prompt.md"),
+            ("postfilter_user",       "postfilter/user/user_prompt.md"),
+            ("related_work",          "summary/user/related_work_prompt.md"),
+            ("technical_route",       "summary/user/technical_route_prompt.md"),
+            ("methodology",           "summary/user/methodology_prompt.md"),
+            ("experiment",            "summary/user/experiment_prompt.md"),
+            ("introduction",          "summary/user/introduction_prompt.md"),
         ]
 
-        for filename in prompt_files:
-            filepath = os.path.join(self.prompt_dir, filename)
+        for key, rel_path in prompts_config:
+            filepath = os.path.join(self.prompt_dir, rel_path)
             if os.path.exists(filepath):
                 with open(filepath, "r", encoding="utf-8") as f:
-                    self.prompts[filename] = f.read().strip()
+                    self.prompts[key] = f.read().strip()
             else:
-                self.prompts[filename] = self._get_default_prompt(filename)
+                self.prompts[key] = self._get_default_prompt(key)
 
-    def _get_default_prompt(self, prompt_type: str) -> str:
+    def _get_default_prompt(self, key: str) -> str:
         """
         获取默认Prompt模板。
-        
+
         内部方法，当文件不存在时提供内置的默认模板。
-        
+
         Args:
-            prompt_type: Prompt类型（文件名）
-        
+            key: Prompt键名（与 prompts_config 中的 key 对应）
+
         Returns:
             默认Prompt字符串
         """
         defaults = {
-            "system_prompt_text.md": (
+            "summary_system_text": (
                 "你是一个专业的学术论文助手，擅长总结和分析学术论文。"
                 "请用中文回答，确保回答准确、清晰、有条理。"
             ),
-            "system_prompt_vision.md": (
+            "summary_system_vision": (
                 "你是一个专业的学术论文助手，擅长通过阅读论文图像来总结和分析学术论文。"
                 "请用中文回答，确保回答准确、清晰、有条理。"
             ),
-            "system_prompt_fulltext_filter.md": (
+            "postfilter_system": (
                 "你是一个严格的学术论文全文筛选助手。根据论文完整内容深度判断相关性。\n"
                 "判断规则：\n"
                 "1. 只输出两个词之一：RELEVANT 或 IRRELEVANT\n"
@@ -1119,19 +1154,19 @@ class Summarizer:
                 "4. 仅在引言或相关工作中提到关键词，核心内容不相关 → IRRELEVANT\n"
                 "注意：必须严格只输出 RELEVANT 或 IRRELEVANT！"
             ),
-            "fulltext_filter_prompt.md": (
+            "postfilter_user": (
                 "请根据以下论文总结内容，判断该论文是否与关键词 \"{keywords}\" 高度相关。\n\n"
                 "重点考察论文的核心方法和技术贡献是否与关键词直接相关。\n\n"
                 "只输出 RELEVANT 或 IRRELEVANT，不要输出其他任何内容！\n\n"
                 "论文总结内容：\n{content}"
             ),
-            "related_work_prompt.md": (
+            "related_work": (
                 "请用一句话（不超过60字）简明扼要地总结该论文相对于已有工作的核心创新点。\n"
                 "格式建议：与[已有方法/工作]相比，本文[核心创新/关键区别]。\n"
                 "要求：用中文，严格一句话，不超过60字。\n\n"
                 "论文内容：\n{content}"
             ),
-            "technical_route_prompt.md": (
+            "technical_route": (
                 "请用 Mermaid flowchart 格式描述该论文的技术路线。\n\n"
                 "要求：\n"
                 "1. 输出 ```mermaid 代码块，使用 flowchart TD 方向\n"
@@ -1140,7 +1175,7 @@ class Summarizer:
                 "4. 不要输出任何代码块以外的额外说明\n\n"
                 "论文内容：\n{content}"
             ),
-            "methodology_prompt.md": (
+            "methodology": (
                 "请用简短要点列出该论文的核心方法，每点不超过20字。\n\n"
                 "要求：\n"
                 "1. 用中文\n"
@@ -1149,7 +1184,7 @@ class Summarizer:
                 "4. 聚焦最核心的技术手段，不要解释背景\n\n"
                 "论文内容：\n{content}"
             ),
-            "experiment_prompt.md": (
+            "experiment": (
                 "请用2-3句话概述该论文的实验方案。\n\n"
                 "要求：\n"
                 "1. 用中文\n"
@@ -1157,7 +1192,7 @@ class Summarizer:
                 "3. 严格控制在3句话以内，不要展开\n\n"
                 "论文内容：\n{content}"
             ),
-            "introduction_prompt.md": (
+            "introduction": (
                 "请用2-3句话概述该论文 Introduction 的核心逻辑。\n\n"
                 "要求：\n"
                 "1. 用中文\n"
@@ -1166,38 +1201,30 @@ class Summarizer:
                 "论文内容：\n{content}"
             ),
         }
-        return defaults.get(prompt_type, "")
+        return defaults.get(key, "")
 
-    def filter_papers(self, papers: List[Paper], keywords: List[str]) -> Tuple[List[Paper], List[Paper]]:
+    def filter_papers(self, papers: List[Paper], keywords: List[str], min_relevance: str = RelevanceLevel.LOW) -> Tuple[List[Paper], List[Paper]]:
         """
-        批量筛选论文。
-        
-        对论文列表中的每篇论文调用PaperFilter.is_relevant()进行筛选，
-        并将结果分为相关和不相关两组。
-        
+        批量筛选论文（LLM单阶段相关度分级）。
+
+        对每篇论文将关键词、标题、分类、摘要一并送入LLM，分级为
+        HIGH / MEDIUM / LOW / IRRELEVANT，保留达到 min_relevance 阈值的论文。
+
         Args:
             papers: Paper对象列表
             keywords: 目标关键词列表
-        
+            min_relevance: 最低保留相关度，默认 RelevanceLevel.LOW
+                - "HIGH": 只保留高度相关
+                - "MEDIUM": 保留中度及以上
+                - "LOW": 保留低度及以上（默认，宽松）
+
         Returns:
-            元组 (relevant_papers, irrelevant_papers):
-            - relevant_papers: 被判定为相关的论文列表
-            - irrelevant_papers: 被判定为不相关的论文列表
-        
+            元组 (relevant_papers, irrelevant_papers)
+
         Example:
             papers = sniffer.search(keywords=["LLM"], max_results=10)
-            
-            # 筛选
-            relevant, irrelevant = summarizer.filter_papers(papers, ["LLM"])
-            
-            print(f"相关: {len(relevant)} 篇")
-            print(f"不相关: {len(irrelevant)} 篇")
-            
-            # 只处理相关论文
-            for paper in relevant:
-                sniffer.download_pdf(paper)
-                summary = summarizer.summarize(paper)
-                # ...
+            relevant, irrelevant = summarizer.filter_papers(papers, ["LLM"], min_relevance="MEDIUM")
+            print(f"保留: {len(relevant)} 篇，过滤: {len(irrelevant)} 篇")
         """
         if not keywords:
             return papers, []
@@ -1207,22 +1234,23 @@ class Summarizer:
 
         print(f"\n开始筛选论文 (共 {len(papers)} 篇)...")
         print(f"目标关键词: {', '.join(keywords)}")
+        print(f"最低相关度阈值: {min_relevance}")
 
         for i, paper in enumerate(papers):
             print(f"\n  [{i+1}/{len(papers)}] 检查: {paper.arxiv_id}")
-            print(f"      标题: {paper.title[:60]}...")
+            print(f"      标题: {paper.title[:60]}{'...' if len(paper.title) > 60 else ''}")
             print(f"      分类: {', '.join(paper.categories) if paper.categories else '未知'}")
 
-            is_relevant, reason = self.paper_filter.is_relevant(paper, keywords)
+            level, reason = self.paper_filter.classify_relevance(paper, keywords)
 
-            if is_relevant:
-                print(f"      ✓ 相关 ({reason})")
+            if RelevanceLevel.is_above_threshold(level, min_relevance):
+                print(f"      ✓ 保留 [{level}] ({reason})")
                 relevant_papers.append(paper)
             else:
-                print(f"      ✗ 不相关 ({reason})")
+                print(f"      ✗ 过滤 [{level}] ({reason})")
                 irrelevant_papers.append(paper)
 
-        print(f"\n筛选完成: 相关 {len(relevant_papers)} 篇，不相关 {len(irrelevant_papers)} 篇")
+        print(f"\n筛选完成: 保留 {len(relevant_papers)} 篇，过滤 {len(irrelevant_papers)} 篇")
         return relevant_papers, irrelevant_papers
 
     def _filter_by_summary(self, paper: Paper, summary_text: str, keywords: List[str]) -> Tuple[bool, str]:

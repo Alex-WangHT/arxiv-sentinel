@@ -45,7 +45,7 @@ if __name__ == "__main__" and __package__ is None:
     __package__ = "src"
 
 from .config import ConfigManager, DeployMode, SearchStrategy
-from .sniffer import ArXivSniffer, Paper, SearchStrategy as SnifferSearchStrategy
+from .sniffer import ArXivSniffer
 from .summarizer import Summarizer
 from .publisher import MkDocsPublisher
 
@@ -273,8 +273,10 @@ class arXivSentinel:
         irrelevant_papers = []
 
         if self.config.ENABLE_LLM_FILTER:
-            print("\n[2/7] AI论文筛选（基于Abstract）...")
-            relevant_papers, irrelevant_papers = self.summarizer.filter_papers(papers, keywords)
+            print("\n[2/7] AI论文筛选（关键词+标题+摘要 → LLM相关度分级）...")
+            relevant_papers, irrelevant_papers = self.summarizer.filter_papers(
+                papers, keywords, min_relevance=self.config.FILTER_MIN_RELEVANCE
+            )
 
             if not relevant_papers:
                 print("没有通过筛选的论文，任务结束。")

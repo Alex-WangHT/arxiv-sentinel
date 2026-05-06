@@ -340,6 +340,7 @@ class Config:
     GIT_AUTHOR_EMAIL: str = "bot@arxiv-sentinel.local"
 
     ENABLE_LLM_FILTER: bool = True
+    FILTER_MIN_RELEVANCE: str = "LOW"
 
     USE_VISION_MODE: bool = False
     VISION_MODEL: str = "Qwen/Qwen2-VL-72B-Instruct"
@@ -417,6 +418,7 @@ class Config:
             GIT_AUTHOR_NAME=data.get("GIT_AUTHOR_NAME", "arXiv Sentinel Bot"),
             GIT_AUTHOR_EMAIL=data.get("GIT_AUTHOR_EMAIL", "bot@arxiv-sentinel.local"),
             ENABLE_LLM_FILTER=data.get("ENABLE_LLM_FILTER", True),
+            FILTER_MIN_RELEVANCE=data.get("FILTER_MIN_RELEVANCE", "LOW"),
             USE_VISION_MODE=data.get("USE_VISION_MODE", False),
             VISION_MODEL=data.get("VISION_MODEL", "Qwen/Qwen2-VL-72B-Instruct"),
             VISION_MAX_PAGES=data.get("VISION_MAX_PAGES", 10),
