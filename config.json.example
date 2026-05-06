@@ -1,6 +1,8 @@
 {
   "SILICONFLOW_API_KEY": "your_siliconflow_api_key_here",
-  "SILICONFLOW_MODEL": "Qwen/Qwen2.5-7B-Instruct",
+
+  "FILTER_MODEL": "Qwen/Qwen2.5-7B-Instruct",
+  "SILICONFLOW_MODEL": "Qwen/Qwen2.5-72B-Instruct",
 
   "KEYWORDS": [
     "LLM",
@@ -22,7 +24,7 @@
 
   "PDF_CACHE_DIR": "./pdf_cache",
   "MARKDOWN_OUTPUT_DIR": "./output/markdown",
-  "PROMPT_DIR": "./markdown",
+  "PROMPT_DIR": "./prompts",
 
   "SITE_NAME": "arXiv Sentinel",
   "SITE_DESCRIPTION": "每日arXiv论文智能总结",

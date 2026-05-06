@@ -37,10 +37,15 @@ import os
 import sys
 import argparse
 from typing import List, Optional
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
+
+# 支持直接运行 `python src/main.py`（自动将项目根目录加入路径）
+if __name__ == "__main__" and __package__ is None:
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    __package__ = "src"
 
 from .config import ConfigManager, DeployMode, SearchStrategy
-from .sniffer import ArXivSniffer, Paper, SearchStrategy as SnifferSearchStrategy
+from .sniffer import ArXivSniffer
 from .summarizer import Summarizer
 from .publisher import MkDocsPublisher
 
@@ -118,6 +123,7 @@ class arXivSentinel:
             use_vision_mode=self.config.USE_VISION_MODE,
             text_model=self.config.SILICONFLOW_MODEL,
             vision_model=self.config.VISION_MODEL,
+            filter_model=self.config.FILTER_MODEL,
         )
         self.publisher = MkDocsPublisher(
             working_dir=self.config.MKDOCS_WORKING_DIR,
@@ -159,7 +165,13 @@ class arXivSentinel:
         for directory in dirs_to_create:
             os.makedirs(directory, exist_ok=True)
 
-    def run(self, keywords: Optional[List[str]] = None, max_results: Optional[int] = None) -> int:
+    def run(
+        self,
+        keywords: Optional[List[str]] = None,
+        max_results: Optional[int] = None,
+        date_from: Optional[datetime] = None,
+        date_to: Optional[datetime] = None,
+    ) -> int:
         """
         执行完整的arXiv Sentinel工作流程。
         
@@ -221,12 +233,19 @@ class arXivSentinel:
         keywords = keywords or self.config.KEYWORDS
         max_results = max_results or self.config.MAX_RESULTS_PER_SEARCH
 
+        # 计算日期过滤范围：传入参数优先，其次读 config.DATE_BACK_DAYS
+        if date_from is None and self.config.DATE_BACK_DAYS is not None:
+            date_from = datetime.now(timezone.utc) - timedelta(days=self.config.DATE_BACK_DAYS)
+
         print(f"{'='*60}")
         print(f"arXiv Sentinel - 运行开始: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
         print(f"关键词: {', '.join(keywords)}")
         print(f"最大结果数: {max_results}")
+        if date_from:
+            print(f"时间筛选: {date_from.strftime('%Y-%m-%d')} 至今 (最近 {self.config.DATE_BACK_DAYS} 天)")
         print(f"部署模式: {self.config.MKDOCS_DEPLOY_MODE}")
-        print(f"文本模型: {self.config.SILICONFLOW_MODEL}")
+        print(f"筛选模型: {self.config.FILTER_MODEL}")
+        print(f"总结模型: {self.config.SILICONFLOW_MODEL}")
         if self.config.USE_VISION_MODE:
             print(f"视觉模式: 启用 ({self.config.VISION_MODEL})")
         else:
@@ -241,6 +260,8 @@ class arXivSentinel:
             search_all_fields=self.config.SEARCH_ALL_FIELDS,
             use_or_for_categories=self.config.USE_OR_FOR_CATEGORIES,
             search_strategy=self.config.SEARCH_STRATEGY,
+            date_from=date_from,
+            date_to=date_to,
         )
         print(f"  找到 {len(papers)} 篇论文")
 
@@ -252,8 +273,10 @@ class arXivSentinel:
         irrelevant_papers = []
 
         if self.config.ENABLE_LLM_FILTER:
-            print("\n[2/7] AI论文筛选（基于Abstract）...")
-            relevant_papers, irrelevant_papers = self.summarizer.filter_papers(papers, keywords)
+            print("\n[2/7] AI论文筛选（关键词+标题+摘要 → LLM相关度分级）...")
+            relevant_papers, irrelevant_papers = self.summarizer.filter_papers(
+                papers, keywords, min_relevance=self.config.FILTER_MIN_RELEVANCE
+            )
 
             if not relevant_papers:
                 print("没有通过筛选的论文，任务结束。")
@@ -273,6 +296,7 @@ class arXivSentinel:
         print("\n[4/7] 生成论文总结...")
         markdown_files = []
         failed_papers = []
+        fulltext_filtered_papers = []
 
         for paper in relevant_papers:
             if not paper.local_pdf_path:
@@ -281,7 +305,11 @@ class arXivSentinel:
 
             try:
                 print(f"  处理论文: {paper.arxiv_id}")
-                summary_result = self.summarizer.summarize(paper)
+                summary_result = self.summarizer.summarize(paper, keywords=keywords)
+                if summary_result is None:
+                    print(f"    全文筛选未通过，跳过: {paper.arxiv_id}")
+                    fulltext_filtered_papers.append(paper)
+                    continue
                 md_path = self.summarizer.generate_markdown(summary_result, self.config.MARKDOWN_OUTPUT_DIR)
                 markdown_files.append(md_path)
                 print(f"    已生成: {md_path}")
@@ -331,7 +359,8 @@ class arXivSentinel:
         print(f"运行完成: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
         print(f"初始搜索: {len(papers)} 篇论文")
         if self.config.ENABLE_LLM_FILTER:
-            print(f"AI筛选: 相关 {len(relevant_papers)} 篇，不相关 {len(irrelevant_papers)} 篇")
+            print(f"摘要筛选: 相关 {len(relevant_papers)} 篇，不相关 {len(irrelevant_papers)} 篇")
+        print(f"全文筛选: 过滤 {len(fulltext_filtered_papers)} 篇")
         print(f"成功处理: {len(markdown_files)} 篇论文")
         print(f"失败: {len(failed_papers)} 篇")
         print(f"构建状态: {'成功' if build_success else '失败'}")
@@ -408,6 +437,12 @@ def main():
     parser.add_argument("--use-and-categories", action="store_true", help="使用AND连接关键词和分类（更严格，默认）")
     parser.add_argument("--search-all-fields", action="store_true", help="搜索所有字段（更宽松）")
     parser.add_argument("--search-title-abstract", action="store_true", help="仅搜索标题和摘要（更严格，默认）")
+    parser.add_argument("--days-back", type=int, default=None, metavar="N",
+                        help="只保留最近 N 天内发布的论文（如 --days-back 7）")
+    parser.add_argument("--date-from", type=str, default=None, metavar="YYYY-MM-DD",
+                        help="只保留该日期之后（含）发布的论文")
+    parser.add_argument("--date-to", type=str, default=None, metavar="YYYY-MM-DD",
+                        help="只保留该日期之前（含）发布的论文")
 
     args = parser.parse_args()
 
@@ -439,6 +474,25 @@ def main():
     if args.search_title_abstract:
         sentinel.config.SEARCH_ALL_FIELDS = False
 
+    # 日期过滤参数
+    date_from: Optional[datetime] = None
+    date_to: Optional[datetime] = None
+    if args.days_back is not None:
+        sentinel.config.DATE_BACK_DAYS = args.days_back
+    if args.date_from:
+        try:
+            date_from = datetime.strptime(args.date_from, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+            sentinel.config.DATE_BACK_DAYS = None  # 精确范围覆盖 days_back
+        except ValueError:
+            print(f"ERROR: --date-from 格式错误，应为 YYYY-MM-DD，收到 '{args.date_from}'")
+            sys.exit(1)
+    if args.date_to:
+        try:
+            date_to = datetime.strptime(args.date_to, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+        except ValueError:
+            print(f"ERROR: --date-to 格式错误，应为 YYYY-MM-DD，收到 '{args.date_to}'")
+            sys.exit(1)
+
     if args.serve:
         sentinel.publisher.initialize_project()
         print(f"启动MkDocs本地服务器，端口: {args.port}")
@@ -457,6 +511,8 @@ def main():
     sentinel.run(
         keywords=args.keywords,
         max_results=args.max_results,
+        date_from=date_from,
+        date_to=date_to,
     )
 
 

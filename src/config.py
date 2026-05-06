@@ -162,11 +162,19 @@ class Config:
             - 可以通过环境变量 SILICONFLOW_API_KEY 设置
             - 获取地址: https://siliconflow.cn
         
-        SILICONFLOW_MODEL (str): 文本模型名称
+        SILICONFLOW_MODEL (str): 论文总结文本模型名称
             - 默认: "Qwen/Qwen2.5-7B-Instruct"（免费）
             - 可选模型:
               - "Qwen/Qwen2.5-14B-Instruct"
               - "deepseek-ai/deepseek-v3"
+              - "THUDM/glm-4-9b-chat"
+
+        FILTER_MODEL (str): Abstract筛选模型名称
+            - 默认: "Qwen/Qwen2.5-7B-Instruct"（免费）
+            - 用于下载PDF前根据摘要判断论文相关性
+            - 可以设置为比总结模型更小更快的模型以节省成本
+            - 可选模型:
+              - "Qwen/Qwen2.5-7B-Instruct"
               - "THUDM/glm-4-9b-chat"
         
         KEYWORDS (List[str]): 搜索关键词列表
@@ -308,6 +316,7 @@ class Config:
     
     SILICONFLOW_API_KEY: str = ""
     SILICONFLOW_MODEL: str = "Qwen/Qwen2.5-7B-Instruct"
+    FILTER_MODEL: str = "Qwen/Qwen2.5-7B-Instruct"
 
     KEYWORDS: List[str] = field(default_factory=lambda: ["LLM", "large language model", "transformer"])
     CATEGORIES: List[str] = field(default_factory=lambda: ["cs.CL", "cs.AI", "cs.CV", "cs.LG"])
@@ -316,7 +325,7 @@ class Config:
 
     PDF_CACHE_DIR: str = "./pdf_cache"
     MARKDOWN_OUTPUT_DIR: str = "./output/markdown"
-    PROMPT_DIR: str = "./markdown"
+    PROMPT_DIR: str = "./prompts"
 
     SITE_NAME: str = "arXiv Sentinel"
     SITE_DESCRIPTION: str = "每日arXiv论文总结"
@@ -331,6 +340,7 @@ class Config:
     GIT_AUTHOR_EMAIL: str = "bot@arxiv-sentinel.local"
 
     ENABLE_LLM_FILTER: bool = True
+    FILTER_MIN_RELEVANCE: str = "LOW"
 
     USE_VISION_MODE: bool = False
     VISION_MODEL: str = "Qwen/Qwen2-VL-72B-Instruct"
@@ -343,6 +353,8 @@ class Config:
     SEARCH_STRATEGY: str = SearchStrategy.MODERATE.value
     SEARCH_ALL_FIELDS: bool = False
     USE_OR_FOR_CATEGORIES: bool = False
+
+    DATE_BACK_DAYS: Optional[int] = None
 
     def to_dict(self) -> Dict[str, Any]:
         """
@@ -389,6 +401,7 @@ class Config:
         return cls(
             SILICONFLOW_API_KEY=data.get("SILICONFLOW_API_KEY", ""),
             SILICONFLOW_MODEL=data.get("SILICONFLOW_MODEL", "Qwen/Qwen2.5-7B-Instruct"),
+            FILTER_MODEL=data.get("FILTER_MODEL", "Qwen/Qwen2.5-7B-Instruct"),
             KEYWORDS=data.get("KEYWORDS", ["LLM", "large language model", "transformer"]),
             CATEGORIES=data.get("CATEGORIES", ["cs.CL", "cs.AI", "cs.CV", "cs.LG"]),
             MAX_RESULTS_PER_SEARCH=data.get("MAX_RESULTS_PER_SEARCH", 10),
@@ -405,6 +418,7 @@ class Config:
             GIT_AUTHOR_NAME=data.get("GIT_AUTHOR_NAME", "arXiv Sentinel Bot"),
             GIT_AUTHOR_EMAIL=data.get("GIT_AUTHOR_EMAIL", "bot@arxiv-sentinel.local"),
             ENABLE_LLM_FILTER=data.get("ENABLE_LLM_FILTER", True),
+            FILTER_MIN_RELEVANCE=data.get("FILTER_MIN_RELEVANCE", "LOW"),
             USE_VISION_MODE=data.get("USE_VISION_MODE", False),
             VISION_MODEL=data.get("VISION_MODEL", "Qwen/Qwen2-VL-72B-Instruct"),
             VISION_MAX_PAGES=data.get("VISION_MAX_PAGES", 10),
@@ -414,6 +428,7 @@ class Config:
             SEARCH_STRATEGY=data.get("SEARCH_STRATEGY", SearchStrategy.MODERATE.value),
             SEARCH_ALL_FIELDS=data.get("SEARCH_ALL_FIELDS", False),
             USE_OR_FOR_CATEGORIES=data.get("USE_OR_FOR_CATEGORIES", False),
+            DATE_BACK_DAYS=data.get("DATE_BACK_DAYS", None),
         )
 
 
