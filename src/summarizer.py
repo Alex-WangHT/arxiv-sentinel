@@ -478,7 +478,7 @@ class SiliconFlowClient:
         def _make_request():
             content_parts = []
 
-            for i, img in enumerate(images):
+            for img in images:
                 if isinstance(img, bytes):
                     base64_img = base64.b64encode(img).decode("utf-8")
                     img_url = f"data:image/png;base64,{base64_img}"
@@ -630,18 +630,43 @@ class PaperFilter:
     RELEVANT = "RELEVANT"
     IRRELEVANT = "IRRELEVANT"
 
-    def __init__(self, siliconflow_client: SiliconFlowClient):
+    def __init__(self, siliconflow_client: SiliconFlowClient, prompt_dir: str = "./prompts"):
         """
         初始化论文筛选器。
-        
+
         Args:
             siliconflow_client: 硅基流动API客户端实例
-        
+            prompt_dir: Prompt模板文件目录，默认为 "./prompts"
+
         Example:
             client = SiliconFlowClient(api_key="your-key")
             paper_filter = PaperFilter(client)
         """
         self.client = siliconflow_client
+        self._system_prompt_template = self._load_system_prompt(prompt_dir)
+
+    def _load_system_prompt(self, prompt_dir: str) -> str:
+        """从文件加载筛选器system prompt模板，文件不存在时使用内置默认值。"""
+        filepath = os.path.join(prompt_dir, "system_prompt_filter.md")
+        if os.path.exists(filepath):
+            with open(filepath, "r", encoding="utf-8") as f:
+                return f.read().strip()
+        return (
+            f"你是一个严格的学术论文筛选助手。你的任务是根据论文的标题、分类和摘要，"
+            f"判断这篇论文是否与给定的关键词高度相关。\n\n"
+            f"判断规则：\n"
+            f"1. 只输出两个词之一：{self.RELEVANT} 或 {self.IRRELEVANT}\n"
+            f"2. 不要输出任何其他解释、标点或说明文字\n"
+            f"3. 如果论文明确属于物理、化学、生物、医学、机械等非计算机科学领域，"
+            f"且关键词是计算机科学相关（如LLM、transformer、神经网络、深度学习等），"
+            f"则判定为 {self.IRRELEVANT}\n"
+            f"4. 如果论文分类是 cs.RO（机器人）但核心内容是计算机视觉/深度学习，"
+            f"则判定为 {self.RELEVANT}\n"
+            f"5. 如果只是在背景介绍中提到关键词，但核心研究内容不相关，"
+            f"则判定为 {self.IRRELEVANT}\n"
+            f"6. 如果论文标题和摘要都显示与关键词高度相关，则判定为 {self.RELEVANT}\n\n"
+            f"注意：必须严格只输出 {self.RELEVANT} 或 {self.IRRELEVANT}，不要添加任何其他内容！"
+        )
 
     def is_relevant(self, paper: Paper, target_keywords: List[str]) -> Tuple[bool, str]:
         """
@@ -690,17 +715,7 @@ class PaperFilter:
         keywords_str = ", ".join(target_keywords)
         categories_str = ", ".join(paper.categories) if paper.categories else "未知"
 
-        system_prompt = f"""你是一个严格的学术论文筛选助手。你的任务是根据论文的标题、分类和摘要，判断这篇论文是否与给定的关键词高度相关。
-
-判断规则：
-1. 只输出两个词之一：{self.RELEVANT} 或 {self.IRRELEVANT}
-2. 不要输出任何其他解释、标点或说明文字
-3. 如果论文明确属于物理、化学、生物、医学、机械等非计算机科学领域，且关键词是计算机科学相关（如LLM、transformer、神经网络、深度学习等），则判定为 {self.IRRELEVANT}
-4. 如果论文分类是 cs.RO（机器人）但核心内容是计算机视觉/深度学习，则判定为 {self.RELEVANT}
-5. 如果只是在背景介绍中提到关键词，但核心研究内容不相关，则判定为 {self.IRRELEVANT}
-6. 如果论文标题和摘要都显示与关键词高度相关，则判定为 {self.RELEVANT}
-
-注意：必须严格只输出 {self.RELEVANT} 或 {self.IRRELEVANT}，不要添加任何其他内容！"""
+        system_prompt = self._system_prompt_template
 
         user_prompt = f"""请判断以下论文是否与关键词 "{keywords_str}" 高度相关：
 
@@ -797,7 +812,7 @@ class PDFExtractor:
         doc = fitz.open(pdf_path)
         text_parts = []
 
-        for page_num, page in enumerate(doc):
+        for page in doc:
             page_text = page.get_text()
             if page_text:
                 page_text = self._clean_text(page_text)
@@ -961,38 +976,48 @@ class Summarizer:
     def __init__(
         self,
         siliconflow_api_key: str,
-        prompt_dir: str = "./markdown",
+        prompt_dir: str = "./prompts",
         use_vision_mode: bool = False,
         text_model: str = "Qwen/Qwen2.5-7B-Instruct",
         vision_model: str = "Qwen/Qwen2-VL-72B-Instruct",
+        filter_model: str = "Qwen/Qwen2.5-7B-Instruct",
     ):
         """
         初始化论文总结器。
-        
+
         Args:
             siliconflow_api_key: 硅基流动API密钥
-            prompt_dir: Prompt模板文件目录，默认为 "./markdown"
+            prompt_dir: Prompt模板文件目录，默认为 "./prompts"
             use_vision_mode: 是否使用视觉模式，默认为False
-            text_model: 文本模型名称
-            vision_model: 视觉模型名称
-        
-        Prompt文件结构：
+            text_model: 论文总结使用的文本模型名称
+            vision_model: 论文总结使用的视觉模型名称
+            filter_model: Abstract筛选使用的模型名称，可独立于总结模型配置
+
+        说明：
+            筛选模型（filter_model）用于下载PDF前根据摘要判断相关性，
+            总结模型（text_model/vision_model）用于下载PDF后的深度分析。
+            两者独立配置，筛选可使用更小更快的模型以节省成本。
+
+        Prompt文件结构（均为Markdown格式）：
             prompt_dir/
-            ├── summary_prompt.txt          # 摘要总结提示
-            ├── technical_route_prompt.txt  # 技术路线分析提示
-            ├── methodology_prompt.txt      # 方法论分析提示
-            ├── experiment_prompt.txt       # 实验方案分析提示
-            ├── introduction_prompt.txt     # Introduction逻辑分析提示
+            ├── system_prompt_text.md       # 文本模式system prompt
+            ├── system_prompt_vision.md     # 视觉模式system prompt
+            ├── system_prompt_filter.md     # 论文筛选system prompt
+            ├── summary_prompt.md           # 摘要总结提示（含{content}占位符）
+            ├── technical_route_prompt.md   # 技术路线分析提示（含{content}占位符）
+            ├── methodology_prompt.md       # 方法论分析提示（含{content}占位符）
+            ├── experiment_prompt.md        # 实验方案分析提示（含{content}占位符）
+            ├── introduction_prompt.md      # Introduction逻辑分析提示（含{content}占位符）
             └── paper_template.md           # 输出Markdown模板
-        
+
         Example:
-            # 文本模式（推荐大多数场景）
+            # 文本模式，筛选和总结用不同模型
             summarizer = Summarizer(
                 siliconflow_api_key=os.environ["SILICONFLOW_API_KEY"],
-                prompt_dir="./my_prompts",
-                use_vision_mode=False
+                filter_model="Qwen/Qwen2.5-7B-Instruct",   # 小模型筛选
+                text_model="deepseek-ai/deepseek-v3",       # 大模型总结
             )
-            
+
             # 视觉模式（包含大量图表、公式的论文）
             summarizer = Summarizer(
                 siliconflow_api_key="your-key",
@@ -1003,42 +1028,60 @@ class Summarizer:
         self.use_vision_mode = use_vision_mode
         self.pdf_extractor = PDFExtractor()
         self.image_converter = ImageConverter(max_pages=10)
+
+        # 论文总结客户端（text_model 用于文本模式，vision_model 用于视觉模式）
         self.siliconflow_client = SiliconFlowClient(
             api_key=siliconflow_api_key,
             text_model=text_model,
             vision_model=vision_model,
         )
-        self.paper_filter = PaperFilter(self.siliconflow_client)
+
+        # Abstract筛选客户端（独立模型，可配置为更轻量的模型）
+        self.filter_client = SiliconFlowClient(
+            api_key=siliconflow_api_key,
+            text_model=filter_model,
+            vision_model=vision_model,
+        )
+
+        self.paper_filter = PaperFilter(self.filter_client, prompt_dir=prompt_dir)
         self.prompt_dir = prompt_dir
         self._load_prompts()
 
     def _load_prompts(self):
         """
         加载Prompt模板文件。
-        
+
         内部方法，从prompt_dir目录加载以下文件：
-        - summary_prompt.txt
-        - technical_route_prompt.txt
-        - methodology_prompt.txt
-        - experiment_prompt.txt
-        - introduction_prompt.txt
-        
+
+        System prompts（系统角色提示）：
+        - system_prompt_text.md   # 文本模式system prompt
+        - system_prompt_vision.md # 视觉模式system prompt
+
+        User prompts（任务指令，含 {content} 占位符）：
+        - summary_prompt.md
+        - technical_route_prompt.md
+        - methodology_prompt.md
+        - experiment_prompt.md
+        - introduction_prompt.md
+
         如果文件不存在，会使用内置的默认模板。
         """
         self.prompts = {}
         prompt_files = [
-            "summary_prompt.txt",
-            "technical_route_prompt.txt",
-            "methodology_prompt.txt",
-            "experiment_prompt.txt",
-            "introduction_prompt.txt",
+            "system_prompt_text.md",
+            "system_prompt_vision.md",
+            "summary_prompt.md",
+            "technical_route_prompt.md",
+            "methodology_prompt.md",
+            "experiment_prompt.md",
+            "introduction_prompt.md",
         ]
 
         for filename in prompt_files:
             filepath = os.path.join(self.prompt_dir, filename)
             if os.path.exists(filepath):
                 with open(filepath, "r", encoding="utf-8") as f:
-                    self.prompts[filename] = f.read()
+                    self.prompts[filename] = f.read().strip()
             else:
                 self.prompts[filename] = self._get_default_prompt(filename)
 
@@ -1055,53 +1098,53 @@ class Summarizer:
             默认Prompt字符串
         """
         defaults = {
-            "summary_prompt.txt": """请为以下学术论文提供一个简洁的摘要总结。要求：
-1. 用中文回答
-2. 突出论文的核心贡献和创新点
-3. 总结要准确、全面，不要遗漏关键信息
-4. 字数控制在300-500字之间
-
-请用清晰的段落组织你的回答。""",
-
-            "technical_route_prompt.txt": """请分析以下论文的技术路线。要求：
-1. 用中文回答
-2. 分点列出技术路线的关键步骤（使用1. 2. 3. 格式）
-3. 说明各步骤之间的逻辑关系和数据流
-4. 指出技术路线的创新性和与现有方法的区别
-5. 如果有架构图或流程图，请描述图中的关键组件和连接
-
-请清晰、有条理地组织你的回答。""",
-
-            "methodology_prompt.txt": """请分析以下论文的方法论。要求：
-1. 用中文回答
-2. 详细描述论文采用的核心方法和技术
-3. 说明方法的理论基础和数学原理（如有）
-4. 分析方法的优势、局限性和适用场景
-5. 描述方法的实现细节和关键算法步骤
-
-请清晰、有条理地组织你的回答。""",
-
-            "experiment_prompt.txt": """请分析以下论文的实验方案。要求：
-1. 用中文回答
-2. 列出实验设置：
-   - 数据集（名称、规模、来源）
-   - 评价指标
-   - 基线方法（Baselines）
-   - 实现细节（硬件、框架、超参数等）
-3. 总结主要实验结果和关键发现
-4. 分析实验的有效性、可靠性和局限性
-5. 如果有消融实验（Ablation Study），请分析其结果
-
-请清晰、有条理地组织你的回答。""",
-
-            "introduction_prompt.txt": """请分析以下论文的Introduction（引言）部分的行文逻辑。要求：
-1. 用中文回答
-2. 梳理作者如何提出研究背景和问题
-3. 分析作者如何引出研究动机和挑战
-4. 说明论文贡献的组织方式和阐述顺序
-5. 分析作者如何定位自己的工作与现有研究的关系
-
-请清晰、有条理地组织你的回答。""",
+            "system_prompt_text.md": (
+                "你是一个专业的学术论文助手，擅长总结和分析学术论文。"
+                "请用中文回答，确保回答准确、清晰、有条理。"
+            ),
+            "system_prompt_vision.md": (
+                "你是一个专业的学术论文助手，擅长通过阅读论文图像来总结和分析学术论文。"
+                "请用中文回答，确保回答准确、清晰、有条理。"
+            ),
+            "summary_prompt.md": (
+                "请为以下论文提供一个简洁的摘要总结。要求：\n"
+                "1. 用中文回答\n"
+                "2. 突出论文的核心贡献和创新点\n"
+                "3. 不要超过300字\n\n"
+                "论文内容：\n{content}"
+            ),
+            "technical_route_prompt.md": (
+                "请分析以下论文的技术路线。要求：\n"
+                "1. 用中文回答\n"
+                "2. 分点列出技术路线的关键步骤\n"
+                "3. 说明各步骤之间的逻辑关系\n"
+                "4. 指出技术路线的创新性\n\n"
+                "论文内容：\n{content}"
+            ),
+            "methodology_prompt.md": (
+                "请分析以下论文的方法论。要求：\n"
+                "1. 用中文回答\n"
+                "2. 详细描述论文采用的核心方法和技术\n"
+                "3. 说明方法的理论基础\n"
+                "4. 分析方法的优势和局限性\n\n"
+                "论文内容：\n{content}"
+            ),
+            "experiment_prompt.md": (
+                "请分析以下论文的实验方案。要求：\n"
+                "1. 用中文回答\n"
+                "2. 列出实验设置（数据集、评价指标、基线方法等）\n"
+                "3. 总结主要实验结果\n"
+                "4. 分析实验的有效性和局限性\n\n"
+                "论文内容：\n{content}"
+            ),
+            "introduction_prompt.md": (
+                "请分析以下论文的Introduction行文逻辑。要求：\n"
+                "1. 用中文回答\n"
+                "2. 梳理作者如何提出问题和背景\n"
+                "3. 分析作者如何引出研究动机\n"
+                "4. 说明论文贡献的组织方式\n\n"
+                "论文内容：\n{content}"
+            ),
         }
         return defaults.get(prompt_type, "")
 
@@ -1235,11 +1278,11 @@ class Summarizer:
         使用文本模式总结论文。
         
         内部方法，执行以下5个维度的分析：
-        1. 论文摘要（summary_prompt.txt）
-        2. 技术路线分析（technical_route_prompt.txt）
-        3. 方法论分析（methodology_prompt.txt）
-        4. 实验方案分析（experiment_prompt.txt）
-        5. Introduction行文逻辑分析（introduction_prompt.txt）
+        1. 论文摘要（summary_prompt.md）
+        2. 技术路线分析（technical_route_prompt.md）
+        3. 方法论分析（methodology_prompt.md）
+        4. 实验方案分析（experiment_prompt.md）
+        5. Introduction行文逻辑分析（introduction_prompt.md）
         
         Args:
             paper: Paper对象
@@ -1255,10 +1298,10 @@ class Summarizer:
 
         print("    使用文本模式总结...")
 
-        system_prompt = "你是一个专业的学术论文助手，擅长总结和分析学术论文。请用中文回答，确保回答准确、清晰、有条理。"
+        system_prompt = self.prompts["system_prompt_text.md"]
 
         summary = self.siliconflow_client.chat(
-            prompt=self.prompts["summary_prompt.txt"] + "\n\n论文内容：\n" + full_text,
+            prompt=self.prompts["summary_prompt.md"].format(content=full_text),
             system_prompt=system_prompt,
             use_vision_model=False,
         )
@@ -1266,7 +1309,7 @@ class Summarizer:
         print("      ✓ 摘要总结完成")
 
         technical_route = self.siliconflow_client.chat(
-            prompt=self.prompts["technical_route_prompt.txt"] + "\n\n论文内容：\n" + full_text,
+            prompt=self.prompts["technical_route_prompt.md"].format(content=full_text),
             system_prompt=system_prompt,
             use_vision_model=False,
         )
@@ -1274,7 +1317,7 @@ class Summarizer:
         print("      ✓ 技术路线分析完成")
 
         methodology = self.siliconflow_client.chat(
-            prompt=self.prompts["methodology_prompt.txt"] + "\n\n论文内容：\n" + full_text,
+            prompt=self.prompts["methodology_prompt.md"].format(content=full_text),
             system_prompt=system_prompt,
             use_vision_model=False,
         )
@@ -1282,7 +1325,7 @@ class Summarizer:
         print("      ✓ 方法论分析完成")
 
         experiment = self.siliconflow_client.chat(
-            prompt=self.prompts["experiment_prompt.txt"] + "\n\n论文内容：\n" + full_text,
+            prompt=self.prompts["experiment_prompt.md"].format(content=full_text),
             system_prompt=system_prompt,
             use_vision_model=False,
         )
@@ -1290,7 +1333,7 @@ class Summarizer:
         print("      ✓ 实验方案分析完成")
 
         intro_analysis = self.siliconflow_client.chat(
-            prompt=self.prompts["introduction_prompt.txt"] + "\n\n论文内容：\n" + full_text,
+            prompt=self.prompts["introduction_prompt.md"].format(content=full_text),
             system_prompt=system_prompt,
             use_vision_model=False,
         )
@@ -1319,10 +1362,11 @@ class Summarizer:
         images = self.image_converter.pdf_to_images(paper.local_pdf_path)
         print(f"    已转换 {len(images)} 页为图像")
 
-        system_prompt = "你是一个专业的学术论文助手，擅长通过阅读论文图像来总结和分析学术论文。请用中文回答，确保回答准确、清晰、有条理。"
+        system_prompt = self.prompts["system_prompt_vision.md"]
 
+        # 视觉模式下论文内容已通过图像传入，user prompt不需要注入文本内容
         summary = self.siliconflow_client.chat_with_images(
-            text_prompt=self.prompts["summary_prompt.txt"],
+            text_prompt=self.prompts["summary_prompt.md"].format(content="（见图像）"),
             images=images,
             system_prompt=system_prompt,
         )
@@ -1330,7 +1374,7 @@ class Summarizer:
         print("      ✓ 摘要总结完成")
 
         technical_route = self.siliconflow_client.chat_with_images(
-            text_prompt=self.prompts["technical_route_prompt.txt"],
+            text_prompt=self.prompts["technical_route_prompt.md"].format(content="（见图像）"),
             images=images,
             system_prompt=system_prompt,
         )
@@ -1338,7 +1382,7 @@ class Summarizer:
         print("      ✓ 技术路线分析完成")
 
         methodology = self.siliconflow_client.chat_with_images(
-            text_prompt=self.prompts["methodology_prompt.txt"],
+            text_prompt=self.prompts["methodology_prompt.md"].format(content="（见图像）"),
             images=images,
             system_prompt=system_prompt,
         )
@@ -1346,7 +1390,7 @@ class Summarizer:
         print("      ✓ 方法论分析完成")
 
         experiment = self.siliconflow_client.chat_with_images(
-            text_prompt=self.prompts["experiment_prompt.txt"],
+            text_prompt=self.prompts["experiment_prompt.md"].format(content="（见图像）"),
             images=images,
             system_prompt=system_prompt,
         )
@@ -1354,7 +1398,7 @@ class Summarizer:
         print("      ✓ 实验方案分析完成")
 
         intro_analysis = self.siliconflow_client.chat_with_images(
-            text_prompt=self.prompts["introduction_prompt.txt"],
+            text_prompt=self.prompts["introduction_prompt.md"].format(content="（见图像）"),
             images=images,
             system_prompt=system_prompt,
         )

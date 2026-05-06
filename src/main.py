@@ -39,6 +39,11 @@ import argparse
 from typing import List, Optional
 from datetime import datetime
 
+# 支持直接运行 `python src/main.py`（自动将项目根目录加入路径）
+if __name__ == "__main__" and __package__ is None:
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    __package__ = "src"
+
 from .config import ConfigManager, DeployMode, SearchStrategy
 from .sniffer import ArXivSniffer, Paper, SearchStrategy as SnifferSearchStrategy
 from .summarizer import Summarizer
@@ -118,6 +123,7 @@ class arXivSentinel:
             use_vision_mode=self.config.USE_VISION_MODE,
             text_model=self.config.SILICONFLOW_MODEL,
             vision_model=self.config.VISION_MODEL,
+            filter_model=self.config.FILTER_MODEL,
         )
         self.publisher = MkDocsPublisher(
             working_dir=self.config.MKDOCS_WORKING_DIR,
@@ -226,7 +232,8 @@ class arXivSentinel:
         print(f"关键词: {', '.join(keywords)}")
         print(f"最大结果数: {max_results}")
         print(f"部署模式: {self.config.MKDOCS_DEPLOY_MODE}")
-        print(f"文本模型: {self.config.SILICONFLOW_MODEL}")
+        print(f"筛选模型: {self.config.FILTER_MODEL}")
+        print(f"总结模型: {self.config.SILICONFLOW_MODEL}")
         if self.config.USE_VISION_MODE:
             print(f"视觉模式: 启用 ({self.config.VISION_MODEL})")
         else:

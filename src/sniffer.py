@@ -22,6 +22,7 @@ arXiv Sentinel - 论文嗅探模块
 
 import os
 import re
+import time
 import requests
 import feedparser
 from datetime import datetime
@@ -347,8 +348,21 @@ class ArXivSniffer:
         print(f"\n  arXiv API请求: {full_url}")
 
         try:
-            response = requests.get(self.ARXIV_API_URL, params=params, timeout=30)
-            response.raise_for_status()
+            max_retries = 5
+            retry_delays = [3, 10, 30, 60, 120]
+            response = None
+            for attempt in range(max_retries):
+                response = requests.get(self.ARXIV_API_URL, params=params, timeout=30)
+                if response.status_code == 429:
+                    delay = retry_delays[attempt]
+                    print(f"  arXiv API限流 (429)，等待 {delay}s 后重试 ({attempt+1}/{max_retries})...")
+                    time.sleep(delay)
+                    continue
+                response.raise_for_status()
+                break
+            else:
+                print(f"  请求失败: arXiv API持续限流，已达最大重试次数")
+                return []
 
             print(f"  响应状态码: {response.status_code}")
             print(f"  响应内容长度: {len(response.content)} bytes")
