@@ -31,7 +31,6 @@ arXiv Sentinel - 论文总结模块
 
 import os
 import re
-import io
 import base64
 import time
 import requests
@@ -1000,15 +999,17 @@ class Summarizer:
 
         Prompt文件结构（均为Markdown格式）：
             prompt_dir/
-            ├── system_prompt_text.md       # 文本模式system prompt
-            ├── system_prompt_vision.md     # 视觉模式system prompt
-            ├── system_prompt_filter.md     # 论文筛选system prompt
-            ├── summary_prompt.md           # 摘要总结提示（含{content}占位符）
-            ├── technical_route_prompt.md   # 技术路线分析提示（含{content}占位符）
-            ├── methodology_prompt.md       # 方法论分析提示（含{content}占位符）
-            ├── experiment_prompt.md        # 实验方案分析提示（含{content}占位符）
-            ├── introduction_prompt.md      # Introduction逻辑分析提示（含{content}占位符）
-            └── paper_template.md           # 输出Markdown模板
+            ├── system_prompt_text.md           # 文本模式system prompt
+            ├── system_prompt_vision.md         # 视觉模式system prompt
+            ├── system_prompt_filter.md         # 摘要筛选system prompt
+            ├── system_prompt_fulltext_filter.md # 全文筛选system prompt
+            ├── fulltext_filter_prompt.md       # 全文筛选提示（含{keywords},{content}占位符）
+            ├── related_work_prompt.md          # 相关工作一句话提示（含{content}占位符）
+            ├── technical_route_prompt.md       # 技术路线分析提示（含{content}占位符）
+            ├── methodology_prompt.md           # 方法论分析提示（含{content}占位符）
+            ├── experiment_prompt.md            # 实验方案分析提示（含{content}占位符）
+            ├── introduction_prompt.md          # Introduction逻辑分析提示（含{content}占位符）
+            └── paper_template.md               # 输出Markdown模板
 
         Example:
             # 文本模式，筛选和总结用不同模型
@@ -1057,12 +1058,13 @@ class Summarizer:
         - system_prompt_text.md   # 文本模式system prompt
         - system_prompt_vision.md # 视觉模式system prompt
 
-        User prompts（任务指令，含 {content} 占位符）：
-        - summary_prompt.md
-        - technical_route_prompt.md
-        - methodology_prompt.md
-        - experiment_prompt.md
-        - introduction_prompt.md
+        User prompts（任务指令）：
+        - fulltext_filter_prompt.md  （含 {keywords}, {content} 占位符）
+        - related_work_prompt.md     （含 {content} 占位符）
+        - technical_route_prompt.md  （含 {content} 占位符）
+        - methodology_prompt.md      （含 {content} 占位符）
+        - experiment_prompt.md       （含 {content} 占位符）
+        - introduction_prompt.md     （含 {content} 占位符）
 
         如果文件不存在，会使用内置的默认模板。
         """
@@ -1070,7 +1072,9 @@ class Summarizer:
         prompt_files = [
             "system_prompt_text.md",
             "system_prompt_vision.md",
-            "summary_prompt.md",
+            "system_prompt_fulltext_filter.md",
+            "fulltext_filter_prompt.md",
+            "related_work_prompt.md",
             "technical_route_prompt.md",
             "methodology_prompt.md",
             "experiment_prompt.md",
@@ -1106,43 +1110,59 @@ class Summarizer:
                 "你是一个专业的学术论文助手，擅长通过阅读论文图像来总结和分析学术论文。"
                 "请用中文回答，确保回答准确、清晰、有条理。"
             ),
-            "summary_prompt.md": (
-                "请为以下论文提供一个简洁的摘要总结。要求：\n"
-                "1. 用中文回答\n"
-                "2. 突出论文的核心贡献和创新点\n"
-                "3. 不要超过300字\n\n"
+            "system_prompt_fulltext_filter.md": (
+                "你是一个严格的学术论文全文筛选助手。根据论文完整内容深度判断相关性。\n"
+                "判断规则：\n"
+                "1. 只输出两个词之一：RELEVANT 或 IRRELEVANT\n"
+                "2. 不要输出任何其他解释、标点或说明文字\n"
+                "3. 核心方法、贡献或应用与关键词直接相关 → RELEVANT\n"
+                "4. 仅在引言或相关工作中提到关键词，核心内容不相关 → IRRELEVANT\n"
+                "注意：必须严格只输出 RELEVANT 或 IRRELEVANT！"
+            ),
+            "fulltext_filter_prompt.md": (
+                "请根据以下论文总结内容，判断该论文是否与关键词 \"{keywords}\" 高度相关。\n\n"
+                "重点考察论文的核心方法和技术贡献是否与关键词直接相关。\n\n"
+                "只输出 RELEVANT 或 IRRELEVANT，不要输出其他任何内容！\n\n"
+                "论文总结内容：\n{content}"
+            ),
+            "related_work_prompt.md": (
+                "请用一句话（不超过60字）简明扼要地总结该论文相对于已有工作的核心创新点。\n"
+                "格式建议：与[已有方法/工作]相比，本文[核心创新/关键区别]。\n"
+                "要求：用中文，严格一句话，不超过60字。\n\n"
                 "论文内容：\n{content}"
             ),
             "technical_route_prompt.md": (
-                "请分析以下论文的技术路线。要求：\n"
-                "1. 用中文回答\n"
-                "2. 分点列出技术路线的关键步骤\n"
-                "3. 说明各步骤之间的逻辑关系\n"
-                "4. 指出技术路线的创新性\n\n"
+                "请用 Mermaid flowchart 格式描述该论文的技术路线。\n\n"
+                "要求：\n"
+                "1. 输出 ```mermaid 代码块，使用 flowchart TD 方向\n"
+                "2. 节点文字用中文，每个节点不超过10个字\n"
+                "3. 只展示核心步骤，节点总数不超过8个\n"
+                "4. 不要输出任何代码块以外的额外说明\n\n"
                 "论文内容：\n{content}"
             ),
             "methodology_prompt.md": (
-                "请分析以下论文的方法论。要求：\n"
-                "1. 用中文回答\n"
-                "2. 详细描述论文采用的核心方法和技术\n"
-                "3. 说明方法的理论基础\n"
-                "4. 分析方法的优势和局限性\n\n"
+                "请用简短要点列出该论文的核心方法，每点不超过20字。\n\n"
+                "要求：\n"
+                "1. 用中文\n"
+                "2. 每个要点以 • 开头\n"
+                "3. 不超过5个要点\n"
+                "4. 聚焦最核心的技术手段，不要解释背景\n\n"
                 "论文内容：\n{content}"
             ),
             "experiment_prompt.md": (
-                "请分析以下论文的实验方案。要求：\n"
-                "1. 用中文回答\n"
-                "2. 列出实验设置（数据集、评价指标、基线方法等）\n"
-                "3. 总结主要实验结果\n"
-                "4. 分析实验的有效性和局限性\n\n"
+                "请用2-3句话概述该论文的实验方案。\n\n"
+                "要求：\n"
+                "1. 用中文\n"
+                "2. 依次涵盖：数据集与基线、核心指标、主要结论\n"
+                "3. 严格控制在3句话以内，不要展开\n\n"
                 "论文内容：\n{content}"
             ),
             "introduction_prompt.md": (
-                "请分析以下论文的Introduction行文逻辑。要求：\n"
-                "1. 用中文回答\n"
-                "2. 梳理作者如何提出问题和背景\n"
-                "3. 分析作者如何引出研究动机\n"
-                "4. 说明论文贡献的组织方式\n\n"
+                "请用2-3句话概述该论文 Introduction 的核心逻辑。\n\n"
+                "要求：\n"
+                "1. 用中文\n"
+                "2. 依次涵盖：问题背景、研究动机、主要贡献\n"
+                "3. 严格控制在3句话以内，不要展开\n\n"
                 "论文内容：\n{content}"
             ),
         }
@@ -1205,26 +1225,77 @@ class Summarizer:
         print(f"\n筛选完成: 相关 {len(relevant_papers)} 篇，不相关 {len(irrelevant_papers)} 篇")
         return relevant_papers, irrelevant_papers
 
-    def summarize(self, paper: Paper) -> Dict:
+    def _filter_by_summary(self, paper: Paper, summary_text: str, keywords: List[str]) -> Tuple[bool, str]:
+        """
+        基于论文总结内容进行相关性筛选。
+
+        在所有总结步骤完成后调用，用生成的总结内容（比原始全文更精炼）判断是否相关。
+        如不相关则调用方丢弃 summary_result，不生成 Markdown 文件。
+
+        Args:
+            paper: Paper对象（用于日志输出）
+            summary_text: 各维度总结拼接后的文本
+            keywords: 目标关键词列表
+
+        Returns:
+            元组 (is_relevant, reason):
+            - is_relevant: 是否相关，布尔值
+            - reason: 判定原因描述
+        """
+        keywords_str = ", ".join(keywords) if keywords else "未指定"
+        system_prompt = self.prompts["system_prompt_fulltext_filter.md"]
+        user_prompt = self.prompts["fulltext_filter_prompt.md"].format(
+            keywords=keywords_str,
+            content=summary_text,
+        )
+
+        try:
+            print(f"    [总结筛选] 正在判断 {paper.arxiv_id} 的相关性...")
+            result = self.siliconflow_client.chat(
+                prompt=user_prompt,
+                system_prompt=system_prompt,
+                temperature=0.1,
+                max_tokens=20,
+                use_vision_model=False,
+            )
+
+            result_clean = result.strip().upper()
+            result_clean = re.sub(r'[^A-Z_]', '', result_clean)
+            print(f"    [总结筛选] AI响应: '{result_clean}'")
+
+            if "IRRELEVANT" in result_clean:
+                return False, "总结筛选：AI判定不相关"
+            elif "RELEVANT" in result_clean:
+                return True, "总结筛选：AI判定相关"
+            else:
+                print(f"    [总结筛选] 无法解析响应，默认判定为相关")
+                return True, "总结筛选：无法解析响应，默认相关"
+
+        except Exception as e:
+            print(f"    [总结筛选] 出错: {e}，默认判定为相关")
+            return True, "总结筛选：出错，默认相关"
+
+    def summarize(self, paper: Paper, keywords: Optional[List[str]] = None) -> Optional[Dict]:
         """
         总结论文。
-        
+
         根据配置的模式（文本或视觉），调用相应的总结方法。
-        
-        文本模式流程：
-        1. 使用PDFExtractor提取文本
-        2. 截断超长文本（>12000字符）
-        3. 调用文本模型进行5个维度的分析
-        
-        视觉模式流程：
-        1. 使用ImageConverter转换为图像
-        2. 调用视觉模型进行5个维度的分析
-        
+
+        完整流程：
+        1. 提取论文内容（文本提取或图像转换）
+        2. 相关工作一句话总结（related_work_prompt.md）
+        3. Mermaid 技术路线（technical_route_prompt.md）
+        4. 方法论要点（methodology_prompt.md）
+        5. 实验概述（experiment_prompt.md）
+        6. Introduction 简述（introduction_prompt.md）
+        7. 基于总结内容进行相关性筛选 → 如不相关则返回 None
+
         Args:
             paper: Paper对象，必须有local_pdf_path属性
-        
+            keywords: 目标关键词列表，用于总结后的相关性筛选
+
         Returns:
-            包含多维度分析结果的字典：
+            包含多维度分析结果的字典，或 None（总结筛选未通过时）：
             {
                 "arxiv_id": "2401.12345",
                 "title": "论文标题",
@@ -1232,24 +1303,27 @@ class Summarizer:
                 "arxiv_url": "https://arxiv.org/abs/...",
                 "categories": ["cs.CL", "cs.AI"],
                 "original_abstract": "原摘要",
-                "summary": "AI生成的摘要",
+                "related_work": "相关工作一句话",
                 "technical_route": "技术路线分析",
                 "methodology": "方法论分析",
                 "experiment": "实验方案分析",
                 "introduction_analysis": "Introduction逻辑分析"
             }
-        
+
         Raises:
             ValueError: 当paper.local_pdf_path为None时
-        
+
         Example:
             paper = papers[0]
             sniffer.download_pdf(paper)  # 确保已下载
-            
+
             try:
-                result = summarizer.summarize(paper)
-                print(f"摘要: {result['summary'][:200]}...")
-                print(f"技术路线: {result['technical_route'][:200]}...")
+                result = summarizer.summarize(paper, keywords=["LLM"])
+                if result is None:
+                    print("总结筛选未通过，跳过")
+                else:
+                    print(f"相关工作: {result['related_work']}")
+                    print(f"技术路线: {result['technical_route'][:200]}...")
             finally:
                 sniffer.cleanup_pdf(paper)
         """
@@ -1269,27 +1343,30 @@ class Summarizer:
         print(f"  总结论文: {paper.arxiv_id}")
 
         if self.use_vision_mode:
-            return self._summarize_with_vision(paper, summary_result)
+            return self._summarize_with_vision(paper, summary_result, keywords or [])
         else:
-            return self._summarize_with_text(paper, summary_result)
+            return self._summarize_with_text(paper, summary_result, keywords or [])
 
-    def _summarize_with_text(self, paper: Paper, summary_result: Dict) -> Dict:
+    def _summarize_with_text(self, paper: Paper, summary_result: Dict, keywords: List[str]) -> Optional[Dict]:
         """
         使用文本模式总结论文。
-        
-        内部方法，执行以下5个维度的分析：
-        1. 论文摘要（summary_prompt.md）
-        2. 技术路线分析（technical_route_prompt.md）
-        3. 方法论分析（methodology_prompt.md）
-        4. 实验方案分析（experiment_prompt.md）
-        5. Introduction行文逻辑分析（introduction_prompt.md）
-        
+
+        内部方法，执行以下步骤：
+        1. 提取全文文本
+        2. 相关工作一句话（related_work_prompt.md）
+        3. Mermaid 技术路线（technical_route_prompt.md）
+        4. 方法论要点（methodology_prompt.md）
+        5. 实验概述（experiment_prompt.md）
+        6. Introduction 简述（introduction_prompt.md）
+        7. 基于总结内容进行相关性筛选 → 不相关则返回 None
+
         Args:
             paper: Paper对象
             summary_result: 待填充的结果字典
-        
+            keywords: 目标关键词列表，用于总结后筛选
+
         Returns:
-            填充完成的结果字典
+            填充完成的结果字典，或 None（总结筛选未通过时）
         """
         full_text = self.pdf_extractor.extract_text(paper.local_pdf_path)
 
@@ -1300,110 +1377,165 @@ class Summarizer:
 
         system_prompt = self.prompts["system_prompt_text.md"]
 
-        summary = self.siliconflow_client.chat(
-            prompt=self.prompts["summary_prompt.md"].format(content=full_text),
+        # Step 1: 相关工作一句话
+        related_work = self.siliconflow_client.chat(
+            prompt=self.prompts["related_work_prompt.md"].format(content=full_text),
             system_prompt=system_prompt,
+            max_tokens=100,
             use_vision_model=False,
         )
-        summary_result["summary"] = summary
-        print("      ✓ 摘要总结完成")
+        summary_result["related_work"] = related_work
+        print("      ✓ 相关工作总结完成")
 
+        # Step 2: Mermaid 技术路线
         technical_route = self.siliconflow_client.chat(
             prompt=self.prompts["technical_route_prompt.md"].format(content=full_text),
             system_prompt=system_prompt,
+            max_tokens=600,
             use_vision_model=False,
         )
         summary_result["technical_route"] = technical_route
-        print("      ✓ 技术路线分析完成")
+        print("      ✓ 技术路线（Mermaid）完成")
 
+        # Step 3: 方法论要点
         methodology = self.siliconflow_client.chat(
             prompt=self.prompts["methodology_prompt.md"].format(content=full_text),
             system_prompt=system_prompt,
+            max_tokens=200,
             use_vision_model=False,
         )
         summary_result["methodology"] = methodology
-        print("      ✓ 方法论分析完成")
+        print("      ✓ 方法论要点完成")
 
+        # Step 4: 实验概述
         experiment = self.siliconflow_client.chat(
             prompt=self.prompts["experiment_prompt.md"].format(content=full_text),
             system_prompt=system_prompt,
+            max_tokens=200,
             use_vision_model=False,
         )
         summary_result["experiment"] = experiment
-        print("      ✓ 实验方案分析完成")
+        print("      ✓ 实验概述完成")
 
+        # Step 5: Introduction 简述
         intro_analysis = self.siliconflow_client.chat(
             prompt=self.prompts["introduction_prompt.md"].format(content=full_text),
             system_prompt=system_prompt,
+            max_tokens=200,
             use_vision_model=False,
         )
         summary_result["introduction_analysis"] = intro_analysis
-        print("      ✓ Introduction分析完成")
+        print("      ✓ Introduction 简述完成")
+
+        # Step 6: 基于总结内容进行相关性筛选
+        if keywords:
+            combined = "\n\n".join([
+                f"相关工作：{related_work}",
+                f"技术路线：{technical_route}",
+                f"方法论：{methodology}",
+                f"实验：{experiment}",
+                f"Introduction：{intro_analysis}",
+            ])
+            is_relevant, reason = self._filter_by_summary(paper, combined, keywords)
+            if not is_relevant:
+                print(f"      ✗ 总结筛选未通过: {reason}")
+                return None
+            print(f"      ✓ 总结筛选通过")
 
         return summary_result
 
-    def _summarize_with_vision(self, paper: Paper, summary_result: Dict) -> Dict:
+    def _summarize_with_vision(self, paper: Paper, summary_result: Dict, keywords: List[str]) -> Optional[Dict]:
         """
         使用视觉模式总结论文。
-        
+
         内部方法，将PDF转换为图像后调用视觉模型。
         可以理解论文中的图表、公式和布局。
-        
+
+        筛选在所有总结步骤完成后进行（基于生成的总结文本），
+        避免额外的视觉API调用。
+
         Args:
             paper: Paper对象
             summary_result: 待填充的结果字典
-        
+            keywords: 目标关键词列表，用于总结后筛选
+
         Returns:
-            填充完成的结果字典
+            填充完成的结果字典，或 None（总结筛选未通过时）
         """
         print("    使用视觉模式（多模态）总结...")
-        print("    正在将PDF转换为图像...")
 
+        # Step 1: 先将PDF转换为图像
+        print("    正在将PDF转换为图像...")
         images = self.image_converter.pdf_to_images(paper.local_pdf_path)
         print(f"    已转换 {len(images)} 页为图像")
 
         system_prompt = self.prompts["system_prompt_vision.md"]
 
         # 视觉模式下论文内容已通过图像传入，user prompt不需要注入文本内容
-        summary = self.siliconflow_client.chat_with_images(
-            text_prompt=self.prompts["summary_prompt.md"].format(content="（见图像）"),
+        # Step 2: 相关工作一句话
+        related_work = self.siliconflow_client.chat_with_images(
+            text_prompt=self.prompts["related_work_prompt.md"].format(content="（见图像）"),
             images=images,
             system_prompt=system_prompt,
+            max_tokens=100,
         )
-        summary_result["summary"] = summary
-        print("      ✓ 摘要总结完成")
+        summary_result["related_work"] = related_work
+        print("      ✓ 相关工作总结完成")
 
+        # Step 3: Mermaid 技术路线
         technical_route = self.siliconflow_client.chat_with_images(
             text_prompt=self.prompts["technical_route_prompt.md"].format(content="（见图像）"),
             images=images,
             system_prompt=system_prompt,
+            max_tokens=600,
         )
         summary_result["technical_route"] = technical_route
-        print("      ✓ 技术路线分析完成")
+        print("      ✓ 技术路线（Mermaid）完成")
 
+        # Step 4: 方法论要点
         methodology = self.siliconflow_client.chat_with_images(
             text_prompt=self.prompts["methodology_prompt.md"].format(content="（见图像）"),
             images=images,
             system_prompt=system_prompt,
+            max_tokens=200,
         )
         summary_result["methodology"] = methodology
-        print("      ✓ 方法论分析完成")
+        print("      ✓ 方法论要点完成")
 
+        # Step 5: 实验概述
         experiment = self.siliconflow_client.chat_with_images(
             text_prompt=self.prompts["experiment_prompt.md"].format(content="（见图像）"),
             images=images,
             system_prompt=system_prompt,
+            max_tokens=200,
         )
         summary_result["experiment"] = experiment
-        print("      ✓ 实验方案分析完成")
+        print("      ✓ 实验概述完成")
 
+        # Step 6: Introduction 简述
         intro_analysis = self.siliconflow_client.chat_with_images(
             text_prompt=self.prompts["introduction_prompt.md"].format(content="（见图像）"),
             images=images,
             system_prompt=system_prompt,
+            max_tokens=200,
         )
         summary_result["introduction_analysis"] = intro_analysis
-        print("      ✓ Introduction分析完成")
+        print("      ✓ Introduction 简述完成")
+
+        # Step 7: 基于总结内容进行相关性筛选
+        if keywords:
+            combined = "\n\n".join([
+                f"相关工作：{related_work}",
+                f"技术路线：{technical_route}",
+                f"方法论：{methodology}",
+                f"实验：{experiment}",
+                f"Introduction：{intro_analysis}",
+            ])
+            is_relevant, reason = self._filter_by_summary(paper, combined, keywords)
+            if not is_relevant:
+                print(f"      ✗ 总结筛选未通过: {reason}")
+                return None
+            print(f"      ✓ 总结筛选通过")
 
         return summary_result
 
@@ -1421,7 +1553,7 @@ class Summarizer:
         - {published}: 发布时间
         - {categories}: 分类列表
         - {original_abstract}: 原摘要
-        - {summary}: AI生成摘要
+        - {related_work}: 相关工作一句话总结
         - {technical_route}: 技术路线分析
         - {methodology}: 方法论分析
         - {experiment}: 实验方案分析
@@ -1462,7 +1594,7 @@ class Summarizer:
             published=summary_result["published"],
             categories=", ".join(summary_result["categories"]),
             original_abstract=summary_result["original_abstract"],
-            summary=summary_result["summary"],
+            related_work=summary_result["related_work"],
             technical_route=summary_result["technical_route"],
             methodology=summary_result["methodology"],
             experiment=summary_result["experiment"],
@@ -1505,31 +1637,31 @@ class Summarizer:
 
 ---
 
-## 论文总结
+## 相关工作（一句话）
 
-{summary}
+{related_work}
 
 ---
 
-## 技术路线分析
+## 技术路线（Mermaid）
 
 {technical_route}
 
 ---
 
-## 方法论分析
+## 方法论要点
 
 {methodology}
 
 ---
 
-## 实验方案分析
+## 实验概述
 
 {experiment}
 
 ---
 
-## Introduction行文逻辑分析
+## Introduction 简述
 
 {introduction_analysis}
 

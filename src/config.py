@@ -353,6 +353,8 @@ class Config:
     SEARCH_ALL_FIELDS: bool = False
     USE_OR_FOR_CATEGORIES: bool = False
 
+    DATE_BACK_DAYS: Optional[int] = None
+
     def to_dict(self) -> Dict[str, Any]:
         """
         将配置转换为字典。
@@ -424,6 +426,7 @@ class Config:
             SEARCH_STRATEGY=data.get("SEARCH_STRATEGY", SearchStrategy.MODERATE.value),
             SEARCH_ALL_FIELDS=data.get("SEARCH_ALL_FIELDS", False),
             USE_OR_FOR_CATEGORIES=data.get("USE_OR_FOR_CATEGORIES", False),
+            DATE_BACK_DAYS=data.get("DATE_BACK_DAYS", None),
         )
 
 

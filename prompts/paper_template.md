@@ -14,31 +14,31 @@
 
 ---
 
-## 论文总结
+## 相关工作（一句话）
 
-{summary}
+{related_work}
 
 ---
 
-## 技术路线分析
+## 技术路线（Mermaid）
 
 {technical_route}
 
 ---
 
-## 方法论分析
+## 方法论要点
 
 {methodology}
 
 ---
 
-## 实验方案分析
+## 实验概述
 
 {experiment}
 
 ---
 
-## Introduction行文逻辑分析
+## Introduction 简述
 
 {introduction_analysis}
 

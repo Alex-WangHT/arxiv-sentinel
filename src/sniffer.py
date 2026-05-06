@@ -25,7 +25,7 @@ import re
 import time
 import requests
 import feedparser
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import List, Dict, Optional, Tuple
 from urllib.parse import quote, urlencode
 
@@ -287,13 +287,15 @@ class ArXivSniffer:
         search_all_fields: bool = False,
         use_or_for_categories: bool = False,
         search_strategy: str = SearchStrategy.MODERATE,
+        date_from: Optional[datetime] = None,
+        date_to: Optional[datetime] = None,
     ) -> List[Paper]:
         """
         使用arXiv API搜索论文。
-        
+
         该方法构建查询字符串，调用arXiv API，解析返回的Atom Feed，
         并返回Paper对象列表。搜索结果默认按提交时间降序排列。
-        
+
         Args:
             keywords: 搜索关键词列表
             categories: arXiv分类列表，为None则不限制分类
@@ -302,6 +304,8 @@ class ArXivSniffer:
             search_all_fields: 是否搜索所有字段，False则仅搜索标题和摘要
             use_or_for_categories: 关键词和分类的逻辑关系，True为OR，False为AND
             search_strategy: 搜索策略，可选 SearchStrategy.STRICT/MODERATE/BROAD
+            date_from: 发布时间下限（含），为None则不限制开始时间，须为UTC时区
+            date_to: 发布时间上限（含），为None则不限制结束时间，须为UTC时区
         
         Returns:
             Paper对象列表，按提交时间降序排列。如果搜索失败或无结果，返回空列表。
@@ -420,6 +424,9 @@ class ArXivSniffer:
                 print(f"    3. 扩展关键词列表")
                 print(f"    4. 减少分类限制")
 
+            if date_from or date_to:
+                papers = self._filter_by_date(papers, date_from, date_to)
+
             return papers
 
         except requests.exceptions.RequestException as e:
@@ -430,6 +437,43 @@ class ArXivSniffer:
             import traceback
             traceback.print_exc()
             return []
+
+    def _parse_published(self, published: str) -> Optional[datetime]:
+        """将 arXiv published 字符串解析为 UTC aware datetime，失败返回 None。"""
+        for fmt in ("%Y-%m-%dT%H:%M:%SZ", "%Y-%m-%dT%H:%M:%S%z", "%Y-%m-%d"):
+            try:
+                dt = datetime.strptime(published, fmt)
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+                return dt
+            except ValueError:
+                continue
+        return None
+
+    def _filter_by_date(
+        self,
+        papers: List[Paper],
+        date_from: Optional[datetime],
+        date_to: Optional[datetime],
+    ) -> List[Paper]:
+        """按发布时间过滤论文列表，date_from/date_to 须为 UTC aware datetime。"""
+        result = []
+        skipped = 0
+        for paper in papers:
+            pub_dt = self._parse_published(paper.published)
+            if pub_dt is None:
+                result.append(paper)
+                continue
+            if date_from and pub_dt < date_from:
+                skipped += 1
+                continue
+            if date_to and pub_dt > date_to:
+                skipped += 1
+                continue
+            result.append(paper)
+        if skipped:
+            print(f"  日期过滤: 保留 {len(result)} 篇，过滤掉 {skipped} 篇")
+        return result
 
     def _extract_arxiv_id(self, entry_id: str) -> str:
         """
