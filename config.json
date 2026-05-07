@@ -1,0 +1,47 @@
+{
+  "llm": {
+    "base_url": "https://api.siliconflow.cn/v1",
+    "api_key_env": "SILICONFLOW_API_KEY",
+    "default_text_model": "Qwen/Qwen2.5-7B-Instruct",
+    "abstract_filter_model": "Qwen/Qwen2.5-7B-Instruct",
+    "introduction_filter_model": "Qwen/Qwen2.5-32B-Instruct",
+    "summarizer_multimodal_model": "Qwen/Qwen2-VL-72B-Instruct",
+    "text_timeout_seconds": 30,
+    "multimodal_timeout_seconds": 120,
+    "retry_max_attempts": 5,
+    "retry_initial_backoff_seconds": 2
+  },
+  "cache": {
+    "root_dir": "./cache",
+    "pdf_dir": "./cache/pdfs",
+    "image_dir": "./cache/images",
+    "history_file": "./cache/history.json",
+    "cleanup_after_run": true
+  },
+  "arxiv": {
+    "categories": ["cs.AI", "cs.CL", "cs.LG"],
+    "keywords": ["LLM", "Agent", "Optimization"],
+    "max_results_per_keyword": 50,
+    "request_interval_seconds": 3
+  },
+  "abstract_filter": {
+    "threshold": "MEDIUM",
+    "allowed_levels": ["IRRELEVANT", "LOW", "MEDIUM", "HIGH"]
+  },
+  "introduction_filter": {
+    "threshold": "MEDIUM",
+    "pdf_pages_to_extract": 3,
+    "allowed_levels": ["LOW", "MEDIUM", "HIGH"]
+  },
+  "summarizer": {
+    "max_pdf_pages_to_image": 5,
+    "fallback_text_pages": 2
+  },
+  "deploy": {
+    "mode": "github_actions",
+    "output_dir": "./docs/papers",
+    "git_remote": "origin",
+    "git_branch": "main",
+    "commit_message_prefix": "docs(papers): auto-publish"
+  }
+}
