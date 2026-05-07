@@ -36,6 +36,7 @@ authors: ["Author A", "Author B"]
     - 本地缓存：
         - arXiv论文总结的缓存文件夹路径
     - 关键词：
+        - arXiv检索领域
         - 论文检索关键词
     - Abstract筛选： 
         - Abstract筛选等级
@@ -50,10 +51,18 @@ authors: ["Author A", "Author B"]
 2. 初始化导入的程序代码文件放在`./src/sniffer.py`中。
 
 ### Step 2: 嗅探 (ArxivSniffer)
-1. 从 `config.json` 读取 `keywords` 列表。
-2. 遍历关键词，调用 arXiv API 获取最新论文。
-3. 通过遍历本地 `docs/papers/` 文件夹下的 Markdown 文件名称，过滤掉历史上已经处理过的 arxiv_id。同时合并本次多关键词请求中重复命中的 arxiv_id。
-4. 代码文件放在 `./src/sniffer.py` 中。
+1. **多关键词检索与聚合**: 
+   - 从 `config.json` 读取 `keywords` 列表。
+   - 遍历关键词列表，依次调用 arXiv API 获取最新论文。
+   - **去重与合并**: 使用 `arxiv_id` 作为唯一键进行聚合。若同一篇论文被多个关键词命中，系统必须将其 `keywords` 字段进行并集处理（例如：同时记录为 `["LLM", "Agent"]`），确保单篇论文对象包含所有触发它的原始标签。
+2. **增量过滤 (Incremental Filtering)**:
+   - **事实来源**: 优先检查 `cache/history.json` 中的 `processed_ids`。
+   - **辅助校验**: 同时扫描 `docs/papers/` 文件夹下的 Markdown 文件名称，过滤掉历史上已经处理过的 `arxiv_id`。如果历史上处理过的`arxiv_id`更新版本，保留最新版，作为未曾处理过的论文。
+   - 仅保留未曾处理过的新论文进入 Pipeline 下一阶段。
+3. **合规性频率限制**: 
+   - 严格遵守 arXiv 官方爬虫协议，在每个关键词的 API 请求之间强制执行 `time.sleep(3)`，防止 IP 被暂时封禁。
+4. **代码实现**: 
+   - 核心逻辑封装在 `./src/sniffer.py` 中，需确保输出的 `PaperObject` 包含聚合后的完整元数据。
 
 ### Step 3: Abstract的AI筛选 (AbstractFilter)
 1. 获取`arxiv_id`对应论文的`title`和`abstract`
@@ -110,7 +119,9 @@ authors: ["Author A", "Author B"]
 
 ### Step 6: 发布 (GithubDeployer)
 1. 将生成的 `.md` 文件提交至 GitHub 仓库。
-2. 触发 GitHub Actions 自动构建 Pages。
+2. 必须执行 git pull --rebase 后再进行 push
+3. 触发 GitHub Actions 自动构建 Pages。
+4. 删除`./cache`文件夹
 
 ## 5. 系统架构与工程结构 (System Architecture & Project Structure)
 
@@ -174,8 +185,7 @@ arxiv-sentinel/
 │
 └── cache/                      # 运行时本地临时缓存目录
     ├── pdfs/                   # 下载的原始 PDF 存放区
-    ├── images/                 # PDF 转图片的缓存区
-    └── history.json            # 历史处理记录（唯一的去重状态来源）
+    └── images/                 # PDF 转图片的缓存区
 ```
 ### 5.3 核心类与职责映射 (Module & Class Responsibilities)
 > **AI 指令：`src/` 下的代码必须遵循“单文件单核心类”原则，严禁逻辑越界。**
