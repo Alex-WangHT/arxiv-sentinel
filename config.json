@@ -1,0 +1,12 @@
+{
+  "arxiv_categories": ["cs.AI", "cs.CL", "cs.LG"],
+  "search_keywords": ["large language model", "agent", "reasoning"],
+  "relevance_threshold": "MEDIUM",
+  "max_results_per_category": 50,
+  "siliconflow_api_key": "sk-yswnbelwichutfnaqifoltczsydrijivpazpkjumpawlupzd",
+  "siliconflow_model": "deepseek-ai/DeepSeek-V4-Flash",
+  "output_dir": "./output",
+  "prompts_dir": "./prompts",
+  "log_level": "INFO",
+  "history_file": "./output/history.json"
+}
