@@ -1,6 +1,29 @@
 {
-  "arxiv_categories": ["cs.AI", "cs.CL", "cs.LG"],
-  "search_keywords": ["large language model", "agent", "reasoning"],
+  "categories": ["cs.RO", "cs.CV", "cs.AI", "cs.CL", "cs.LG"],
+  "keywords": ["large language model", "agent", "reasoning"],
+  "domain_rules": [
+    {
+      "category": "cs.RO",
+      "mode": "accept_all"
+    },
+    {
+      "category": "cs.CV",
+      "mode": "categories_filter",
+      "filter_categories": ["cs.AI", "cs.CL", "cs.RO", "cs.LG"]
+    },
+    {
+      "category": "cs.AI",
+      "mode": "accept_all"
+    },
+    {
+      "category": "cs.CL",
+      "mode": "accept_all"
+    },
+    {
+      "category": "cs.LG",
+      "mode": "accept_all"
+    }
+  ],
   "relevance_threshold": "MEDIUM",
   "max_results_per_category": 50,
   "siliconflow_api_key": "sk-yswnbelwichutfnaqifoltczsydrijivpazpkjumpawlupzd",

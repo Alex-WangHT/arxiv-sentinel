@@ -1,6 +1,15 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+
+
+@dataclass
+class DomainRule:
+    """领域筛选规则：定义某个 arXiv 分类的抓取策略"""
+
+    category: str
+    mode: str  # "accept_all" 或 "categories_filter"
+    filter_categories: list[str] = field(default_factory=list)
 
 
 @dataclass
