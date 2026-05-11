@@ -182,3 +182,8 @@ def _load_history(history_file: str) -> list[str]:
         return []
     except (json.JSONDecodeError, OSError):
         return []
+
+if __name__ == "__main__":
+    # 测试 Config
+    cfg = Config.from_file()
+    print(cfg)

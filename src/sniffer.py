@@ -133,3 +133,15 @@ class ArxivSniffer:
             raise RuntimeError("所有分类嗅探均失败")
 
         return new_papers
+
+if __name__ == "__main__":
+    # 测试 ArxivSniffer
+    sniffer = ArxivSniffer(
+        domain_rules=[DomainRule(category="cs.CV", mode="categories_filter", filter_categories=["cs.AI", "cs.CL", "cs.RO", "cs.LG"])],
+        max_results=50,
+        processed_ids=["arxiv_id_1", "arxiv_id_2"],
+    )
+    papers = sniffer.sniff()
+    print(f"嗅探到 {len(papers)} 篇论文")
+    for paper in papers:
+        print(paper)
