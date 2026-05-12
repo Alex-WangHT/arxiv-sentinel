@@ -25,9 +25,9 @@ class ArxivSniffer:
         self.processed_ids = set(processed_ids)
         today = date.today()
         if target_date is None:
-            self.target_date = today - timedelta(days=1)
+            self.target_date = today - timedelta(days=2)
         else:
-            self.target_date = min(target_date, today - timedelta(days=1))
+            self.target_date = min(target_date, today - timedelta(days=2))
         self.target_str = self.target_date.strftime("%Y-%m-%d")
 
     def _matches_filter_categories(self, paper: Paper, rule_category: str, filter_categories: list[str]) -> bool:
