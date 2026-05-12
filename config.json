@@ -13,7 +13,7 @@
   ],
   "relevance_threshold": "MEDIUM",
   "max_results_per_category": 5,
-  "openai_api_key": "sk-3c745c5d70074947858d311dce86d38d",
+  "openai_api_key": "sk-",
   "openai_model": "deepseek-v4-flash",
   "openai_base_url": "https://api.deepseek.com",
   "output_dir": "./output",
