@@ -4,18 +4,11 @@ import os
 from dataclasses import dataclass
 from datetime import date, timedelta
 
-try:
-    from .config import Config
-    from .llm_client import LlmClient
-    from .models import AnalysisResult, Paper
-    from .paper_analyzer import PaperAnalyzer
-    from .sniffer import ArxivSniffer
-except ImportError:
-    from config import Config
-    from llm_client import LlmClient
-    from models import AnalysisResult, Paper
-    from paper_analyzer import PaperAnalyzer
-    from sniffer import ArxivSniffer
+from config import Config
+from llm_client import LlmClient
+from models import AnalysisResult, Paper
+from paper_analyzer import PaperAnalyzer
+from sniffer import ArxivSniffer
 
 logger = logging.getLogger(__name__)
 
