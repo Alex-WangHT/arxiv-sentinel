@@ -52,7 +52,7 @@ export class Config {
     this.processed_ids = [];
   }
 
-  static fromFile(configPath: string = './config.json'): Config {
+  static fromFile(configPath: string = path.join(__dirname, '../../config.json')): Config {
     const raw = this._loadJson(configPath);
     const parsed = this._parseDomainRules(raw);
     const cfg = new Config(parsed);

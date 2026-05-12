@@ -9,8 +9,18 @@ const DEFAULT_TIMEOUT = 120;
 const DEFAULT_CONNECTIONS = 3;
 const DEFAULT_REQUEST_INTERVAL = 0.5;
 
+type ChatMessage = Array<{ role: string; content: string }>;
+
+interface ChatCompletionParams {
+  model: string;
+  messages: ChatMessage;
+  temperature: number;
+  response_format?: OpenAI.ResponseFormatJSONObject;
+  stream: false;
+}
+
 export class LlmClient {
-  private client: OpenAI.AsyncOpenAI;
+  private client: OpenAI;
   private model: string;
   private maxRetries: number;
   private retryBase: number;
@@ -47,23 +57,25 @@ export class LlmClient {
   }
 
   private buildKwargs(
-    messages: Array<{ role: string; content: string }>,
+    messages: ChatMessage,
     temperature: number,
     jsonMode: boolean,
-  ): Record<string, unknown> {
-    const kwargs: Record<string, unknown> = {
+  ): ChatCompletionParams {
+    const kwargs: ChatCompletionParams = {
       model: this.model,
       messages: [...messages],
       temperature,
+      stream: false,
     };
 
     if (jsonMode) {
       kwargs.response_format = { type: 'json_object' };
       const jsonPrompt = '请以JSON格式输出你的回答。';
-      if (kwargs.messages.length > 0 && kwargs.messages[0].role === 'system') {
-        kwargs.messages[0].content = jsonPrompt + kwargs.messages[0].content;
+      const msgList = kwargs.messages as Array<{ role: string; content: string }>;
+      if (msgList.length > 0 && msgList[0].role === 'system') {
+        msgList[0].content = jsonPrompt + msgList[0].content;
       } else {
-        kwargs.messages.unshift({ role: 'system', content: jsonPrompt });
+        msgList.unshift({ role: 'system', content: jsonPrompt });
       }
     }
 
@@ -103,7 +115,7 @@ export class LlmClient {
   }
 
   async achat(
-    messages: Array<{ role: string; content: string }>,
+    messages: ChatMessage,
     temperature: number = DEFAULT_TEMPERATURE,
     jsonMode: boolean = true,
     requestId: string = '',
@@ -118,7 +130,7 @@ export class LlmClient {
         console.debug(`${requestLabel} 第 ${attempt + 1} 次调用开始`);
 
         const response = await Promise.race([
-          this.client.chat.completions.create(kwargs),
+          this.client.chat.completions.create(kwargs as OpenAI.Chat.Completions.ChatCompletionCreateParamsNonStreaming),
           new Promise<never>((_, reject) =>
             setTimeout(() => reject(new Error('请求超时')), this.timeout * 1000),
           ),
@@ -158,7 +170,7 @@ export class LlmClient {
   }
 
   async batchAchat(
-    messagesList: Array<Array<{ role: string; content: string }>>,
+    messagesList: ChatMessage[],
     temperature: number = DEFAULT_TEMPERATURE,
     jsonMode: boolean = true,
     requestInterval: number = DEFAULT_REQUEST_INTERVAL,
@@ -167,7 +179,7 @@ export class LlmClient {
     const totalCount = messagesList.length;
     const queueSize = this.connections >= 1 ? this.connections : 3;
 
-    const queues: Array<{ index: number; messages: Array<Array<{ role: string; content: string }>> }> = [];
+    const queues: Array<{ index: number; messages: ChatMessage[] }> = [];
     for (let i = 0; i < queueSize; i++) {
       const queue = messagesList.filter((_, idx) => idx % queueSize === i);
       if (queue.length > 0) {
@@ -181,7 +193,7 @@ export class LlmClient {
     const results = new Array<LlmResponse>(totalCount);
     let completedCount = 0;
 
-    const processQueue = async (queueIndex: number, queueMessages: Array<Array<{ role: string; content: string }>>) => {
+    const processQueue = async (queueIndex: number, queueMessages: ChatMessage[]) => {
       const queueTotal = queueMessages.length;
 
       for (let j = 0; j < queueTotal; j++) {
@@ -244,7 +256,7 @@ if (require.main === module) {
       content: '{"task": "介绍一下你自己", "language": "Chinese"}',
     }];
 
-    const result = await llm.achat({ messages: testMessages });
+    const result = await llm.achat(testMessages);
     console.log(`模型: ${result.model}`);
     console.log(`数据: ${JSON.stringify(result.data)}`);
     console.log(`错误: ${result.error}`);

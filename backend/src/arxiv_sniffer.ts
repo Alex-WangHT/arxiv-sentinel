@@ -1,5 +1,21 @@
-import * as arxiv from 'arxiv';
+import * as https from 'https';
 import { DomainRule, Paper } from './models';
+
+interface ArxivEntry {
+  id: string;
+  title: string;
+  summary: string;
+  author: { name: string }[] | { name: string };
+  category: { term: string }[];
+  link: { href: string; title?: string }[];
+  published: string;
+}
+
+interface ArxivResponse {
+  feed: {
+    entry: ArxivEntry[];
+  };
+}
 
 export class ArxivSniffer {
   private domainRules: DomainRule[];
@@ -38,6 +54,15 @@ export class ArxivSniffer {
     return `${year}-${month}-${day}`;
   }
 
+  private parseDate(dateStr: string): string {
+    const match = dateStr.match(/^(\d{4})-(\d{2})-(\d{2})/);
+    if (match) {
+      return `${match[1]}-${match[2]}-${match[3]}`;
+    }
+    const date = new Date(dateStr);
+    return this.formatDate(date);
+  }
+
   private matchesFilterCategories(paper: Paper, ruleCategory: string, filterCategories: string[]): boolean {
     const paperCats = new Set(paper.categories);
     const otherCats = new Set([...paperCats].filter(cat => cat !== ruleCategory));
@@ -50,37 +75,104 @@ export class ArxivSniffer {
   }
 
   private async fetchCategory(rule: DomainRule): Promise<Paper[]> {
-    try {
-      const search = new arxiv.Search({
-        query: `cat:${rule.category}`,
-        maxResults: this.maxResults,
-        sortBy: arxiv.SortCriterion.SubmittedDate,
-        sortOrder: arxiv.SortOrder.Descending,
+    return new Promise((resolve) => {
+      const query = encodeURIComponent(`cat:${rule.category}`);
+      const url = `https://export.arxiv.org/api/query?search_query=${query}&max_results=${this.maxResults}&sortBy=submittedDate&sortOrder=descending`;
+
+      https.get(url, (res) => {
+        let data = '';
+        res.on('data', (chunk) => {
+          data += chunk;
+        });
+        res.on('end', () => {
+          try {
+            const xmlData = data;
+            const papers = this.parseArxivXml(xmlData, rule);
+            console.info(
+              `分类 ${rule.category} (模式=${rule.mode}): 获取 ${papers.length} 篇 (日期=${this.targetStr})`,
+            );
+            resolve(papers);
+          } catch (e) {
+            console.warn(`解析分类 ${rule.category} 时发生异常: ${(e as Error).message}`);
+            resolve([]);
+          }
+        });
+      }).on('error', (e) => {
+        console.warn(`获取分类 ${rule.category} 时发生异常: ${(e as Error).message}`);
+        resolve([]);
       });
+    });
+  }
 
-      const papers: Paper[] = [];
-
-      for await (const result of search.results()) {
-        let arxivId = result.entryId.replace(/\/$/, '').split('/').pop() || '';
+  private parseArxivXml(xmlData: string, rule: DomainRule): Paper[] {
+    const papers: Paper[] = [];
+    
+    const entryRegex = /<entry[\s\S]*?<\/entry>/g;
+    let match;
+    
+    while ((match = entryRegex.exec(xmlData)) !== null) {
+      const entryXml = match[0];
+      
+      try {
+        const idMatch = entryXml.match(/<id>([^<]+)<\/id>/);
+        const titleMatch = entryXml.match(/<title[^>]*>([^<]+)<\/title>/);
+        const summaryMatch = entryXml.match(/<summary[^>]*>([\s\S]*?)<\/summary>/);
+        const publishedMatch = entryXml.match(/<published>([^<]+)<\/published>/);
+        const categoryMatches = entryXml.match(/<category[^>]*term="([^"]+)"/g);
+        const linkMatches = entryXml.match(/<link[^>]*href="([^"]+)"/g);
+        
+        if (!idMatch || !titleMatch || !summaryMatch || !publishedMatch) {
+          continue;
+        }
+        
+        let arxivId = idMatch[1].replace(/\/$/, '').split('/').pop() || '';
         if (arxivId.includes('v')) {
           arxivId = arxivId.split('v')[0];
         }
-
-        const publishedStr = this.formatDate(result.published);
+        
+        const publishedStr = this.parseDate(publishedMatch[1]);
         if (publishedStr !== this.targetStr) {
           continue;
         }
-
+        
+        const authors: string[] = [];
+        const authorRegex = /<author[\s\S]*?<name>([^<]+)<\/name>[\s\S]*?<\/author>/g;
+        let authorMatch;
+        while ((authorMatch = authorRegex.exec(entryXml)) !== null) {
+          authors.push(authorMatch[1]);
+        }
+        
+        const categories: string[] = [];
+        if (categoryMatches) {
+          categoryMatches.forEach(catMatch => {
+            const catTerm = catMatch.match(/term="([^"]+)"/);
+            if (catTerm) {
+              categories.push(catTerm[1]);
+            }
+          });
+        }
+        
+        let pdfUrl = '';
+        if (linkMatches) {
+          for (const linkMatch of linkMatches) {
+            const href = linkMatch.match(/href="([^"]+)"/);
+            if (href && href[1].endsWith('.pdf')) {
+              pdfUrl = href[1];
+              break;
+            }
+          }
+        }
+        
         const paper: Paper = {
           arxiv_id: arxivId,
-          title: result.title,
-          abstract: result.summary,
-          authors: result.authors.map(a => a.name),
-          categories: result.categories,
-          pdf_url: result.pdfUrl,
+          title: titleMatch[1].trim(),
+          abstract: summaryMatch[1].trim(),
+          authors,
+          categories,
+          pdf_url: pdfUrl,
           published: publishedStr,
         };
-
+        
         if (rule.mode === 'accept_all') {
           papers.push(paper);
         } else if (rule.mode === 'categories_filter') {
@@ -88,18 +180,14 @@ export class ArxivSniffer {
             papers.push(paper);
           }
         }
+        
+      } catch (e) {
+        console.warn(`解析论文条目时发生异常: ${(e as Error).message}`);
+        continue;
       }
-
-      console.info(
-        `分类 ${rule.category} (模式=${rule.mode}): 获取 ${papers.length} 篇 (日期=${this.targetStr})`,
-      );
-
-      return papers;
-
-    } catch (e) {
-      console.warn(`获取分类 ${rule.category} 时发生异常: ${(e as Error).message}`);
-      return [];
     }
+    
+    return papers;
   }
 
   async sniff(): Promise<Paper[]> {
