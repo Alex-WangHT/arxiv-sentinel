@@ -133,7 +133,7 @@ if __name__ == "__main__":
     )
     analyzer = PaperAnalyzer(
         llm_client=llm,
-        keywords=["areial manipulator"],
+        keywords=["Deep Learning"],
         threshold="MEDIUM",
         prompts_dir="./prompts",
     )
