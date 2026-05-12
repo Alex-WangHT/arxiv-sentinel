@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 from dataclasses import dataclass, field
 
 
@@ -35,11 +33,11 @@ class FilterResult:
 
 
 @dataclass
-class PipelineRun:
-    """一次完整流水线运行的记录"""
+class SummaryResult:
+    """论文总结结果"""
 
-    date: str  # 运行日期
-    categories: list[str]  # 处理的分类
-    total_fetched: int  # 嗅探获取总数
-    total_filtered: int  # 筛选后保留数
-    papers: list[FilterResult]  # 筛选结果列表
+    paper: Paper  # 论文对象
+    core_methods: str  # 核心技术方法
+    problem: str  # 需要解决的问题
+    keywords: list[str]  # 最多五个关键词
+    error: str | None = None  # 错误信息

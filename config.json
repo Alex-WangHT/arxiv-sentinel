@@ -10,18 +10,6 @@
       "category": "cs.CV",
       "mode": "categories_filter",
       "filter_categories": ["cs.AI", "cs.CL", "cs.RO", "cs.LG"]
-    },
-    {
-      "category": "cs.AI",
-      "mode": "accept_all"
-    },
-    {
-      "category": "cs.CL",
-      "mode": "accept_all"
-    },
-    {
-      "category": "cs.LG",
-      "mode": "accept_all"
     }
   ],
   "relevance_threshold": "MEDIUM",

@@ -1,0 +1,45 @@
+# Python 编译文件
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# 虚拟环境
+venv/
+.venv/
+env/
+ENV/
+
+# 输出目录
+output/
+
+# 日志文件
+*.log
+
+# 配置文件（包含敏感信息）
+config.json
+
+# IDE 和编辑器文件
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# 操作系统文件
+.DS_Store
+Thumbs.db
+
+# 临时文件
+*.tmp
+*.temp
+
+# 测试报告
+htmlcov/
+.coverage
+.pytest_cache/
+.tox/
+
+# Jupyter 笔记本
+.ipynb_checkpoints/

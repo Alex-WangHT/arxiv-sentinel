@@ -3,8 +3,8 @@ from __future__ import annotations
 import logging
 import time
 
-from src.llm_client import LlmClient
-from src.models import Paper, FilterResult
+from .llm_client import LlmClient
+from .models import Paper, FilterResult
 
 logger = logging.getLogger(__name__)
 
@@ -26,8 +26,8 @@ class AbstractFilter:
         self.keywords = keywords
         self.threshold = threshold
 
-        system_path = f"{prompts_dir}/abstract_filter/system.txt"
-        user_path = f"{prompts_dir}/abstract_filter/user.txt"
+        system_path = f"{prompts_dir}/abstract_filter/system.md"
+        user_path = f"{prompts_dir}/abstract_filter/user.md"
         with open(system_path, encoding="utf-8") as f:
             self.system_prompt = f.read()
         with open(user_path, encoding="utf-8") as f:
@@ -85,6 +85,9 @@ class AbstractFilter:
         return filtered
 
 if __name__ == "__main__":
+    import sys
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).parent.parent))
     from src.llm_client import LlmClient
     llm = LlmClient(
         api_key="sk-yswnbelwichutfnaqifoltczsydrijivpazpkjumpawlupzd",

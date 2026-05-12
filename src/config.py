@@ -1,12 +1,13 @@
-from __future__ import annotations
-
 import json
 import logging
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from src.models import DomainRule
+try:
+    from .models import DomainRule
+except ImportError:
+    from models import DomainRule
 
 _RELEVANCE_LEVELS = ("IRRELEVANT", "LOW", "MEDIUM", "HIGH")
 _LOG_LEVELS = ("DEBUG", "INFO", "WARNING", "ERROR")
@@ -31,7 +32,7 @@ class Config:
     processed_ids: list[str] = field(default_factory=list, repr=False)
 
     @classmethod
-    def from_file(cls, path: str = "./config.json") -> Config:
+    def from_file(cls, path: str = "./config.json") -> 'Config':
         """从 JSON 文件加载配置，执行校验、目录创建、日志初始化与历史加载"""
         raw = _load_json(path)
         raw = _parse_domain_rules(raw)
@@ -184,6 +185,5 @@ def _load_history(history_file: str) -> list[str]:
         return []
 
 if __name__ == "__main__":
-    # 测试 Config
     cfg = Config.from_file()
     print(cfg)
