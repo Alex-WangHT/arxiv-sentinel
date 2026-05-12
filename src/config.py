@@ -14,7 +14,6 @@ _DOMAIN_MODES = ("accept_all", "categories_filter")
 class Config:
     """应用配置，从 config.json 加载并校验"""
 
-    categories: list[str]
     keywords: list[str]
     domain_rules: list[DomainRule]
     relevance_threshold: str
@@ -64,13 +63,6 @@ def _load_json(path: str) -> dict:
 def _validate(cfg: Config) -> None:
     """校验配置字段，失败时抛出 ValueError"""
     errors: list[str] = []
-
-    if not isinstance(cfg.categories, list) or len(cfg.categories) == 0:
-        errors.append("categories: 必填且不能为空列表")
-    else:
-        for i, cat in enumerate(cfg.categories):
-            if not isinstance(cat, str) or not cat.strip():
-                errors.append(f"categories[{i}]: 须为非空字符串")
 
     if not isinstance(cfg.keywords, list) or len(cfg.keywords) == 0:
         errors.append("keywords: 必填且至少包含 1 项")
