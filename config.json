@@ -12,10 +12,10 @@
     }
   ],
   "relevance_threshold": "MEDIUM",
-  "max_results_per_category": 10,
+  "max_results_per_category": 5,
   "openai_api_key": "sk-",
-  "openai_model": "deepseek-ai/DeepSeek-V4-Flash",
-  "openai_base_url": "https://api.siliconflow.cn/v1",
+  "openai_model": "deepseek-v4-flash",
+  "openai_base_url": "https://api.deepseek.com",
   "output_dir": "./output",
   "prompts_dir": "./prompts",
   "log_level": "INFO",

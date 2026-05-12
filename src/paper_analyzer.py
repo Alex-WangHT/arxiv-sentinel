@@ -97,17 +97,21 @@ class PaperAnalyzer:
         return self._parse_response(paper, response)
 
     async def analyze_papers(
-        self, papers: list[Paper], max_concurrent: int = 3
+        self, papers: list[Paper], request_interval: float = 0.5, queue_interval: float = 20.0
     ) -> list[AnalysisResult]:
-        """异步批量分析论文，并行处理"""
-        logger.info(f"开始异步分析 {len(papers)} 篇论文，最大并发数: {max_concurrent}")
+        """异步批量分析论文，多队列并行模式
+        
+        队列内串行处理，队列间并行执行，队列间隔默认20秒。
+        """
+        logger.info(f"开始异步分析 {len(papers)} 篇论文，请求间隔: {request_interval} 秒，队列间隔: {queue_interval} 秒")
 
         messages_list = [self._build_messages(paper) for paper in papers]
 
         responses = await self.llm_client.batch_achat(
             messages_list=messages_list,
             json_mode=True,
-            max_concurrent=max_concurrent,
+            request_interval=request_interval,
+            queue_interval=queue_interval,
         )
 
         results = [

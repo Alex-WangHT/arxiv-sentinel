@@ -31,6 +31,7 @@ class Pipeline:
         self.llm_client = LlmClient(
             api_key=config.openai_api_key,
             model=config.openai_model,
+            timeout=20,
             base_url=config.openai_base_url,
         )
         self.analyzer = PaperAnalyzer(
@@ -59,7 +60,8 @@ class Pipeline:
         logger.info(f"开始分析 {len(papers)} 篇论文")
         results = await self.analyzer.analyze_papers(
             papers,
-            max_concurrent=self.config.max_concurrent_requests
+            request_interval=3,  # 请求间隔 500ms，避免触发限流
+            queue_interval=10
         )
 
         filtered = self.analyzer.apply_threshold(results)
