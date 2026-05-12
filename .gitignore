@@ -1,61 +1,46 @@
-# Python
+# Python 编译文件
 __pycache__/
-*.py[cod]
-*$py.class
-*.so
+*.pyc
+*.pyo
+*.pyd
 .Python
-build/
-develop-eggs/
-dist/
-downloads/
-eggs/
-.eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-wheels/
-*.egg-info/
-.installed.cfg
-*.egg
 
-# Virtual environments
-.venv
+# 虚拟环境
 venv/
-ENV/
+.venv/
 env/
+ENV/
 
-# IDE
-.idea/
+# 输出目录
+output/
+
+# 日志文件
+*.log
+
+# 配置文件（包含敏感信息）
+config.json
+
+# IDE 和编辑器文件
 .vscode/
+.idea/
 *.swp
 *.swo
 *~
 
-# OS
+# 操作系统文件
 .DS_Store
 Thumbs.db
 
-# Config (keep example)
-config.json
+# 临时文件
+*.tmp
+*.temp
 
-# Cache directories
-pdf_cache/
-output/
-mkdocs_repo/
-page/
-
-# MkDocs build
-site/
-*.pyc
-
-# Logs
-*.log
-logs/
-
-# Testing
-.pytest_cache/
-.coverage
+# 测试报告
 htmlcov/
+.coverage
+.pytest_cache/
 .tox/
+
+# Jupyter 笔记本
+.ipynb_checkpoints/
+
