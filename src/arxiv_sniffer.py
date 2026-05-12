@@ -11,7 +11,7 @@ logger = logging.getLogger(__name__)
 
 
 class ArxivSniffer:
-    """arXiv 论文嗅探器，按领域规则获取前一日论文并做分类交叉筛选"""
+    """arXiv 论文嗅探器（异步版本）"""
 
     def __init__(
         self,
@@ -31,11 +31,7 @@ class ArxivSniffer:
         self.target_str = self.target_date.strftime("%Y-%m-%d")
 
     def _matches_filter_categories(self, paper: Paper, rule_category: str, filter_categories: list[str]) -> bool:
-        """检查论文是否满足 categories_filter 规则：
-        - 如果论文只有本领域分类，保留
-        - 如果论文有其他领域分类，至少有一个额外分类在 filter_categories 中就保留
-        - 所有额外分类都不在 filter_categories 中，就丢弃
-        """
+        """检查论文是否满足 categories_filter 规则"""
         paper_cats = set(paper.categories)
         other_cats = paper_cats - {rule_category}
         if not other_cats:
@@ -43,7 +39,7 @@ class ArxivSniffer:
         return bool(other_cats & set(filter_categories))
 
     def _fetch_category(self, rule: DomainRule) -> list[Paper]:
-        """获取单个分类的论文"""
+        """获取单个分类的论文（同步方法，在后台线程中执行）"""
         try:
             client = arxiv.Client()
             search = arxiv.Search(
@@ -78,13 +74,6 @@ class ArxivSniffer:
                 elif rule.mode == "categories_filter":
                     if self._matches_filter_categories(paper, rule.category, rule.filter_categories):
                         papers.append(paper)
-                    else:
-                        logger.debug(
-                            "论文 %s 未命中交叉分类，跳过 (分类=%s, 需匹配=%s)",
-                            paper.arxiv_id,
-                            rule.category,
-                            rule.filter_categories,
-                        )
 
             logger.info(
                 "分类 %s (模式=%s): 获取 %d 篇 (日期=%s)",
@@ -99,35 +88,27 @@ class ArxivSniffer:
             logger.warning("获取分类 %s 时发生异常: %s", rule.category, str(e))
             return []
 
-    def sniff(self) -> list[Paper]:
-        """全领域嗅探，合并去重后返回新论文列表"""
+    async def sniff(self) -> list[Paper]:
+        """异步全领域嗅探，合并去重后返回新论文列表"""
         logger.info("开始嗅探，目标日期: %s", self.target_str)
 
-        # 使用线程池并发获取所有分类的论文
-        all_papers: list[Paper] = []
-        
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        
-        try:
-            # 将同步任务包装为异步任务
-            async def async_fetch():
-                tasks = []
-                for rule in self.domain_rules:
-                    task = loop.run_in_executor(None, self._fetch_category, rule)
-                    tasks.append(task)
-                
-                results = await asyncio.gather(*tasks)
-                return results
-            
-            results = loop.run_until_complete(async_fetch())
-            
-            # 合并所有结果
-            for papers in results:
-                all_papers.extend(papers)
-        finally:
-            loop.close()
+        # 使用 asyncio.to_thread 在后台线程中并行执行同步任务
+        tasks = [
+            asyncio.to_thread(self._fetch_category, rule)
+            for rule in self.domain_rules
+        ]
 
+        results = await asyncio.gather(*tasks)
+
+        # 合并所有结果
+        all_papers: list[Paper] = []
+        for papers in results:
+            all_papers.extend(papers)
+
+        return self._post_process(all_papers)
+
+    def _post_process(self, all_papers: list[Paper]) -> list[Paper]:
+        """后处理：去重和过滤已处理的论文"""
         total_fetched = len(all_papers)
 
         # 去重
@@ -157,18 +138,23 @@ class ArxivSniffer:
 
         return new_papers
 
+    # 为了兼容 pipeline 中的调用，保留别名
+    sniff_async = sniff
+
 
 if __name__ == "__main__":
-    # 测试嗅探器
-    sniffer = ArxivSniffer(
-        domain_rules=[
-            DomainRule(category="cs.CV", mode="categories_filter", filter_categories=["cs.AI", "cs.CL", "cs.RO", "cs.LG"]),
-            DomainRule(category="cs.RO", mode="accept_all", filter_categories=[]),
-        ],
-        max_results=100,
-        processed_ids=[],
-    )
-    papers = sniffer.sniff()
-    print(f"嗅探到 {len(papers)} 篇论文")
-    for paper in papers:
-        print(f"论文编号：{paper.arxiv_id}，分类：{paper.categories}，标题：{paper.title}")
+    async def run_test():
+        sniffer = ArxivSniffer(
+            domain_rules=[
+                DomainRule(category="cs.CV", mode="categories_filter", filter_categories=["cs.AI", "cs.CL", "cs.RO", "cs.LG"]),
+                DomainRule(category="cs.RO", mode="accept_all", filter_categories=[]),
+            ],
+            max_results=10,
+            processed_ids=[],
+        )
+        papers = await sniffer.sniff()
+        print(f"嗅探到 {len(papers)} 篇论文")
+        for paper in papers:
+            print(f"论文编号：{paper.arxiv_id}，分类：{paper.categories}，标题：{paper.title}")
+
+    asyncio.run(run_test())

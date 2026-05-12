@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 import os
@@ -23,7 +24,7 @@ class PipelineResult:
 
 
 class Pipeline:
-    """论文追踪流水线：整合嗅探、分析、筛选和保存流程"""
+    """论文追踪流水线：整合嗅探、分析、筛选和保存流程（异步版本）"""
 
     def __init__(self, config: Config):
         self.config = config
@@ -39,27 +40,28 @@ class Pipeline:
             prompts_dir=config.prompts_dir,
         )
 
-    def sniff_papers(self, target_date: date | None = None) -> list[Paper]:
-        """执行嗅探，获取目标日期的新论文"""
+    async def sniff_papers(self, target_date: date | None = None) -> list[Paper]:
+        """异步执行嗅探，获取目标日期的新论文"""
         sniffer = ArxivSniffer(
             domain_rules=self.config.domain_rules,
             max_results=self.config.max_results_per_category,
             processed_ids=self.config.processed_ids,
             target_date=target_date,
         )
-        return sniffer.sniff()
+        return await sniffer.sniff_async()
 
-    def analyze_papers(self, papers: list[Paper]) -> list[AnalysisResult]:
-        """批量分析论文并按阈值过滤"""
+    async def analyze_papers(self, papers: list[Paper]) -> list[AnalysisResult]:
+        """异步批量分析论文并按阈值过滤"""
         if not papers:
             logger.info("没有论文需要分析")
             return []
 
-        # 逐一分析论文
         logger.info(f"开始分析 {len(papers)} 篇论文")
-        results = self.analyzer.analyze_papers(papers)
+        results = await self.analyzer.analyze_papers(
+            papers,
+            max_concurrent=self.config.max_concurrent_requests
+        )
 
-        # 按阈值筛选
         filtered = self.analyzer.apply_threshold(results)
         return filtered
 
@@ -69,7 +71,6 @@ class Pipeline:
         filename = f"analysis_results_{target_date}.json"
         filepath = os.path.join(output_dir, filename)
 
-        # 将分析结果转换为可序列化的字典
         results_data = []
         for result in results:
             paper = result.paper
@@ -89,7 +90,6 @@ class Pipeline:
             }
             results_data.append(result_dict)
 
-        # 写入 JSON 文件
         with open(filepath, "w", encoding="utf-8") as f:
             json.dump(results_data, f, ensure_ascii=False, indent=2)
 
@@ -100,22 +100,19 @@ class Pipeline:
         """更新历史记录，记录已处理的论文 ID"""
         new_ids = [p.arxiv_id for p in papers]
         updated_ids = list(set(self.config.processed_ids + new_ids))
-        
-        # 保存到历史文件
+
         with open(self.config.history_file, "w", encoding="utf-8") as f:
             json.dump(updated_ids, f, ensure_ascii=False, indent=2)
-        
-        # 更新内存中的已处理列表
+
         self.config.processed_ids = updated_ids
         logger.info(f"历史记录已更新，新增 {len(new_ids)} 条记录")
 
-    def run(self, target_date: date | None = None) -> PipelineResult:
-        """执行完整的流水线流程"""
+    async def run(self, target_date: date | None = None) -> PipelineResult:
+        """异步执行完整的流水线流程"""
         logger.info("=" * 60)
-        logger.info("开始执行 arXiv Sentinel 流水线")
+        logger.info("开始执行 arXiv Sentinel 流水线（异步模式）")
         logger.info("=" * 60)
 
-        # 获取目标日期字符串
         if target_date is None:
             target_date_str = (date.today() - timedelta(days=1)).strftime("%Y-%m-%d")
         else:
@@ -123,7 +120,7 @@ class Pipeline:
 
         # 步骤1: 嗅探论文
         logger.info("步骤1: 开始嗅探 arXiv 论文")
-        papers = self.sniff_papers(target_date)
+        papers = await self.sniff_papers(target_date)
         total_fetched = len(papers)
         logger.info(f"步骤1完成: 嗅探到 {total_fetched} 篇新论文")
 
@@ -138,7 +135,7 @@ class Pipeline:
 
         # 步骤2: 分析论文
         logger.info("步骤2: 开始分析论文摘要")
-        filtered_results = self.analyze_papers(papers)
+        filtered_results = await self.analyze_papers(papers)
         total_filtered = len(filtered_results)
         logger.info(f"步骤2完成: 分析并筛选后保留 {total_filtered} 篇")
 
@@ -163,12 +160,13 @@ class Pipeline:
 
 
 if __name__ == "__main__":
-    # 测试流水线
     from config import Config
 
     cfg = Config.from_file()
     pipeline = Pipeline(cfg)
-    result = pipeline.run()
+
+    result = asyncio.run(pipeline.run())
+
     print(f"日期: {result.date}")
     print(f"获取论文数: {result.total_fetched}")
     print(f"筛选后保留: {result.total_filtered}")

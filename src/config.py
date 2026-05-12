@@ -21,6 +21,7 @@ class Config:
     openai_model: str
     openai_base_url: str = "https://api.siliconflow.cn/v1"
     max_results_per_category: int = 50
+    max_concurrent_requests: int = 5
     output_dir: str = "./output"
     prompts_dir: str = "./prompts"
     log_level: str = "INFO"
