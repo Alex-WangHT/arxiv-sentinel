@@ -64,7 +64,7 @@ class LlmClient:
         self,
         api_key: str,
         model: str,
-        base_url: str = "https://api.siliconflow.cn/v1",
+        base_url: str = "https://api.openai.com/v1",
         max_retries: int = _DEFAULT_MAX_RETRIES,
         retry_base: int = _DEFAULT_RETRY_BASE,
         timeout: int = _DEFAULT_TIMEOUT,
@@ -195,8 +195,9 @@ if __name__ == "__main__":
     
     # 创建客户端实例
     llm = LlmClient(
-        api_key=cfg.siliconflow_api_key,
-        model=cfg.siliconflow_model,
+        api_key=cfg.openai_api_key,
+        model=cfg.openai_model,
+        base_url=cfg.openai_base_url,
     )
     
     # 测试调用（使用 JSON 模式）

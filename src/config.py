@@ -3,11 +3,7 @@ import logging
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
-
-try:
-    from .models import DomainRule
-except ImportError:
-    from models import DomainRule
+from models import DomainRule
 
 _RELEVANCE_LEVELS = ("IRRELEVANT", "LOW", "MEDIUM", "HIGH")
 _LOG_LEVELS = ("DEBUG", "INFO", "WARNING", "ERROR")
@@ -22,8 +18,9 @@ class Config:
     keywords: list[str]
     domain_rules: list[DomainRule]
     relevance_threshold: str
-    siliconflow_api_key: str
-    siliconflow_model: str
+    openai_api_key: str
+    openai_model: str
+    openai_base_url: str = "https://api.siliconflow.cn/v1"
     max_results_per_category: int = 50
     output_dir: str = "./output"
     prompts_dir: str = "./prompts"
@@ -109,11 +106,11 @@ def _validate(cfg: Config) -> None:
     if not isinstance(cfg.max_results_per_category, int) or not (1 <= cfg.max_results_per_category <= 200):
         errors.append("max_results_per_category: 须为整数且范围 1-200")
 
-    if not isinstance(cfg.siliconflow_api_key, str) or not cfg.siliconflow_api_key.strip():
-        errors.append("siliconflow_api_key: 必填且不能为空")
+    if not isinstance(cfg.openai_api_key, str) or not cfg.openai_api_key.strip():
+        errors.append("openai_api_key: 必填且不能为空")
 
-    if not isinstance(cfg.siliconflow_model, str) or not cfg.siliconflow_model.strip():
-        errors.append("siliconflow_model: 必填且不能为空")
+    if not isinstance(cfg.openai_model, str) or not cfg.openai_model.strip():
+        errors.append("openai_model: 必填且不能为空")
 
     if not isinstance(cfg.output_dir, str) or not cfg.output_dir.strip():
         errors.append("output_dir: 须为非空字符串")
