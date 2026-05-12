@@ -6,6 +6,7 @@
 - 自动重试与错误处理
 - JSON 输出模式支持
 - 可配置的重试策略
+- 请求超时控制
 
 当前实现基于 SiliconFlow API，但通过配置 base_url 可适配其他 OpenAI 兼容服务。
 """
@@ -17,14 +18,16 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Union
 
 import openai
+from httpx import Timeout
 
 # 模块级日志记录器
 logger = logging.getLogger(__name__)
 
 # 默认配置常量
-_DEFAULT_MAX_RETRIES = 3  # 默认最大重试次数
-_DEFAULT_RETRY_BASE = 2    # 指数退避基数（秒）
-_DEFAULT_TEMPERATURE = 0.1 # 默认采样温度，较低值使输出更确定
+_DEFAULT_MAX_RETRIES = 3    # 默认最大重试次数
+_DEFAULT_RETRY_BASE = 2     # 指数退避基数（秒）
+_DEFAULT_TEMPERATURE = 0.1  # 默认采样温度，较低值使输出更确定
+_DEFAULT_TIMEOUT = 60       # 默认超时时间（秒）
 
 
 @dataclass
@@ -54,6 +57,7 @@ class LlmClient:
         base_url: API 基础地址，默认为 SiliconFlow
         max_retries: 最大重试次数
         retry_base: 指数退避基数，每次重试间隔为 base^attempt 秒
+        timeout: 请求超时时间（秒）
     """
 
     def __init__(
@@ -63,12 +67,18 @@ class LlmClient:
         base_url: str = "https://api.siliconflow.cn/v1",
         max_retries: int = _DEFAULT_MAX_RETRIES,
         retry_base: int = _DEFAULT_RETRY_BASE,
+        timeout: int = _DEFAULT_TIMEOUT,
     ) -> None:
-        # 初始化 OpenAI 客户端
-        self.client = openai.OpenAI(api_key=api_key, base_url=base_url)
+        # 初始化 OpenAI 客户端，设置超时
+        self.client = openai.OpenAI(
+            api_key=api_key,
+            base_url=base_url,
+            timeout=Timeout(timeout, read=timeout),
+        )
         self.model = model
         self.max_retries = max_retries
         self.retry_base = retry_base
+        self.timeout = timeout
 
     def chat(
         self,
@@ -101,10 +111,17 @@ class LlmClient:
             kwargs["response_format"] = {"type": "json_object"}
 
         # 执行带重试的 API 调用
+        start_time = time.time()
         for attempt in range(self.max_retries):
             try:
+                attempt_start = time.time()
+                logger.debug(f"LLM 调用第 {attempt + 1} 次开始")
+                
                 # 调用 OpenAI API
                 response = self.client.chat.completions.create(**kwargs)
+                
+                elapsed = time.time() - attempt_start
+                logger.debug(f"LLM 调用第 {attempt + 1} 次成功，耗时 {elapsed:.2f} 秒")
                 
                 # 提取响应内容
                 raw_content = response.choices[0].message.content
@@ -113,6 +130,8 @@ class LlmClient:
                 if json_mode:
                     try:
                         parsed_data = json.loads(raw_content)
+                        total_elapsed = time.time() - start_time
+                        logger.debug(f"LLM 调用完成，总耗时 {total_elapsed:.2f} 秒")
                         return LlmResponse(
                             model=self.model,
                             data=parsed_data,
@@ -120,6 +139,7 @@ class LlmClient:
                         )
                     except json.JSONDecodeError as e:
                         # JSON 解析失败，直接返回错误
+                        logger.warning(f"JSON 解析失败: {str(e)}")
                         return LlmResponse(
                             model=self.model,
                             data=None,
@@ -127,6 +147,8 @@ class LlmClient:
                         )
 
                 # 非 JSON 模式，直接包装返回
+                total_elapsed = time.time() - start_time
+                logger.debug(f"LLM 调用完成，总耗时 {total_elapsed:.2f} 秒")
                 return LlmResponse(
                     model=self.model,
                     data={"content": raw_content},
@@ -134,25 +156,26 @@ class LlmClient:
                 )
 
             except Exception as e:
+                elapsed = time.time() - start_time
                 # 处理其他异常（网络错误、API 错误等）
                 if attempt < self.max_retries - 1:
                     # 非最后一次尝试，等待后重试
                     wait_time = self.retry_base ** attempt
-                    logger.debug(
-                        "LLM 调用第 %d 次失败，等待 %d 秒后重试: %s",
-                        attempt + 1, wait_time, str(e)
+                    logger.warning(
+                        "LLM 调用第 %d 次失败（已耗时 %.2f 秒），等待 %d 秒后重试: %s",
+                        attempt + 1, elapsed, wait_time, str(e)
                     )
                     time.sleep(wait_time)
                 else:
                     # 最后一次尝试失败，记录警告并返回错误
-                    logger.warning(
-                        "LLM 调用失败（已重试 %d 次）: %s",
-                        self.max_retries, str(e)
+                    logger.error(
+                        "LLM 调用失败（已重试 %d 次，总耗时 %.2f 秒）: %s",
+                        self.max_retries, elapsed, str(e)
                     )
                     return LlmResponse(
                         model=self.model,
                         data=None,
-                        error=f"API 调用失败（重试 {self.max_retries} 次）: {str(e)}"
+                        error=f"API 调用失败（重试 {self.max_retries} 次，耗时 {elapsed:.2f} 秒）: {str(e)}"
                     )
 
         # 理论上不会到达这里，因为循环会在 max_retries 次后返回

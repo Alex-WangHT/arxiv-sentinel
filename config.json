@@ -13,8 +13,8 @@
     }
   ],
   "relevance_threshold": "MEDIUM",
-  "max_results_per_category": 50,
-  "siliconflow_api_key": "sk-yswnbelwichutfnaqifoltczsydrijivpazpkjumpawlupzd",
+  "max_results_per_category": 10,
+  "siliconflow_api_key": "sk-",
   "siliconflow_model": "deepseek-ai/DeepSeek-V4-Flash",
   "output_dir": "./output",
   "prompts_dir": "./prompts",
