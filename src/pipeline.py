@@ -8,7 +8,7 @@ from config import Config
 from llm_client import LlmClient
 from models import AnalysisResult, Paper
 from paper_analyzer import PaperAnalyzer
-from src.arxiv_sniffer import ArxivSniffer
+from arxiv_sniffer import ArxivSniffer
 
 logger = logging.getLogger(__name__)
 
