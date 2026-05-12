@@ -135,7 +135,7 @@ def _ensure_dirs(cfg: Config) -> None:
     """确保所需目录存在，不存在则递归创建"""
     dirs = [
         cfg.output_dir,
-        os.path.join(cfg.prompts_dir, "abstract_filter"),
+        os.path.join(cfg.prompts_dir, "paper_analyzer"),
         os.path.join(cfg.output_dir, "reports"),
     ]
     for d in dirs:

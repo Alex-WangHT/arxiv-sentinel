@@ -24,12 +24,15 @@ class Paper:
 
 
 @dataclass
-class FilterResult:
-    """论文筛选结果，包含论文对象与 AI 评估信息"""
+class AnalysisResult:
+    """论文综合分析结果（合并筛选与总结）"""
 
     paper: Paper  # 论文对象
     score: str  # 相关度评分（HIGH/MEDIUM/LOW/IRRELEVANT）
-    reason: str  # AI 给出的理由
+    reason: str  # AI 给出的评估理由
+    core_methods: str  # 核心技术方法
+    problem: str  # 需要解决的问题
+    keywords: list[str]  # 最多五个关键词
 
 
 @dataclass
