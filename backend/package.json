@@ -1,0 +1,20 @@
+{
+  "name": "paper-sniffer-backend",
+  "version": "1.0.0",
+  "description": "arXiv论文追踪系统后端",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "dev": "tsc --watch"
+  },
+  "dependencies": {
+    "arxiv": "^2.2.0",
+    "openai": "^4.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "typescript": "^5.0.0"
+  }
+}
