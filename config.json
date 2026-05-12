@@ -1,5 +1,4 @@
 {
-  "categories": ["cs.RO", "cs.CV", "cs.AI", "cs.CL", "cs.LG"],
   "keywords": ["large language model", "agent", "reasoning"],
   "domain_rules": [
     {
@@ -14,8 +13,9 @@
   ],
   "relevance_threshold": "MEDIUM",
   "max_results_per_category": 10,
-  "siliconflow_api_key": "sk-",
-  "siliconflow_model": "deepseek-ai/DeepSeek-V4-Flash",
+  "openai_api_key": "sk-",
+  "openai_model": "deepseek-ai/DeepSeek-V4-Flash",
+  "openai_base_url": "https://api.siliconflow.cn/v1",
   "output_dir": "./output",
   "prompts_dir": "./prompts",
   "log_level": "INFO",

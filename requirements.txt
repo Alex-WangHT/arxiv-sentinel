@@ -1,6 +1,4 @@
 arxiv>=2.1.0
 openai>=1.0.0
 fastapi>=0.100.0
-uvicorn>=0.20.0
-pdf2image>=1.16.0
 aiohttp>=3.9.0

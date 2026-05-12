@@ -4,18 +4,11 @@ import os
 from dataclasses import dataclass
 from datetime import date, timedelta
 
-try:
-    from .config import Config
-    from .llm_client import LlmClient
-    from .models import AnalysisResult, Paper
-    from .paper_analyzer import PaperAnalyzer
-    from .sniffer import ArxivSniffer
-except ImportError:
-    from config import Config
-    from llm_client import LlmClient
-    from models import AnalysisResult, Paper
-    from paper_analyzer import PaperAnalyzer
-    from sniffer import ArxivSniffer
+from config import Config
+from llm_client import LlmClient
+from models import AnalysisResult, Paper
+from paper_analyzer import PaperAnalyzer
+from arxiv_sniffer import ArxivSniffer
 
 logger = logging.getLogger(__name__)
 
@@ -35,8 +28,9 @@ class Pipeline:
     def __init__(self, config: Config):
         self.config = config
         self.llm_client = LlmClient(
-            api_key=config.siliconflow_api_key,
-            model=config.siliconflow_model,
+            api_key=config.openai_api_key,
+            model=config.openai_model,
+            base_url=config.openai_base_url,
         )
         self.analyzer = PaperAnalyzer(
             llm_client=self.llm_client,

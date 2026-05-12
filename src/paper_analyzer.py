@@ -130,6 +130,7 @@ if __name__ == "__main__":
     llm = LlmClient(
         api_key="sk-yswnbelwichutfnaqifoltczsydrijivpazpkjumpawlupzd",
         model="deepseek-ai/DeepSeek-V4-Flash",
+        base_url="https://api.siliconflow.cn/v1",
     )
     analyzer = PaperAnalyzer(
         llm_client=llm,
