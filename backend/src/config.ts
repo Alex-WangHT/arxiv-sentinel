@@ -1,15 +1,32 @@
-import * as fs from 'fs';
-import * as path from 'path';
 import { DomainRule } from './models';
 
-const RELEVANCE_LEVELS = ['IRRELEVANT', 'LOW', 'MEDIUM', 'HIGH'];
-const LOG_LEVELS = ['DEBUG', 'INFO', 'WARNING', 'ERROR'];
+/*
+ * 这个文件负责“把外部配置变成程序能安全使用的 Config 对象”。
+ *
+ * 原来的 Node.js 版本通常会从本地 config.json 读取配置；
+ * Cloudflare Workers 没有稳定的本地文件系统，所以这里改成主要从 env 读取。
+ *
+ * env 可以来自：
+ * 1. wrangler.toml 里的 [vars]
+ * 2. 本地调试用的 backend/.dev.vars
+ * 3. Cloudflare Dashboard / wrangler secret put 设置的密钥
+ */
+
+const RELEVANCE_LEVELS = ['IRRELEVANT', 'LOW', 'MEDIUM', 'HIGH'] as const;
+const LOG_LEVELS = ['DEBUG', 'INFO', 'WARNING', 'ERROR'] as const;
 const DOMAIN_MODES = ['accept_all', 'categories_filter'] as const;
 
+// 这里用 typeof ...[number] 从数组里自动推导联合类型。
+// 例如 RelevanceLevel 等价于 'IRRELEVANT' | 'LOW' | 'MEDIUM' | 'HIGH'。
+type RelevanceLevel = typeof RELEVANCE_LEVELS[number];
+type LogLevel = typeof LOG_LEVELS[number];
+
+// ConfigData 是程序内部真正想要的配置形状。
+// 它比 WorkerConfigEnv 更“干净”：数组已经是数组，数字已经是 number，不再是字符串。
 export interface ConfigData {
   keywords: string[];
   domain_rules: DomainRule[];
-  relevance_threshold: string;
+  relevance_threshold: RelevanceLevel;
   openai_api_key: string;
   openai_model: string;
   openai_base_url?: string;
@@ -17,14 +34,41 @@ export interface ConfigData {
   max_concurrent_requests?: number;
   output_dir?: string;
   prompts_dir?: string;
-  log_level?: string;
+  log_level?: LogLevel;
   history_file?: string;
+  prompt_system?: string;
+  prompt_user_template?: string;
 }
 
+// Cloudflare Workers 传进来的 env 里的变量通常是字符串。
+// 比如 MAX_RESULTS_PER_CATEGORY 在 wrangler.toml 中写成 "5"，这里先按 string 接收，
+// 后面 parseRawConfig / optionalNumber 会把它转成 number。
+export interface WorkerConfigEnv {
+  CONFIG_JSON?: string;
+  KEYWORDS?: string;
+  DOMAIN_RULES?: string;
+  RELEVANCE_THRESHOLD?: string;
+  OPENAI_API_KEY?: string;
+  OPENAI_MODEL?: string;
+  OPENAI_BASE_URL?: string;
+  MAX_RESULTS_PER_CATEGORY?: string;
+  MAX_CONCURRENT_REQUESTS?: string;
+  OUTPUT_DIR?: string;
+  PROMPTS_DIR?: string;
+  LOG_LEVEL?: string;
+  HISTORY_FILE?: string;
+  PROMPT_SYSTEM?: string;
+  PROMPT_USER_TEMPLATE?: string;
+}
+
+type RawConfig = Record<string, unknown>;
+
+// Config 是一个经过解析和校验后的配置对象。
+// 业务代码只依赖这个类，不需要关心配置到底来自 config.json、环境变量还是 secret。
 export class Config {
   keywords: string[];
   domain_rules: DomainRule[];
-  relevance_threshold: string;
+  relevance_threshold: RelevanceLevel;
   openai_api_key: string;
   openai_model: string;
   openai_base_url: string;
@@ -32,9 +76,11 @@ export class Config {
   max_concurrent_requests: number;
   output_dir: string;
   prompts_dir: string;
-  log_level: string;
+  log_level: LogLevel;
   history_file: string;
   processed_ids: string[];
+  prompt_system?: string;
+  prompt_user_template?: string;
 
   constructor(data: ConfigData) {
     this.keywords = data.keywords;
@@ -42,162 +88,264 @@ export class Config {
     this.relevance_threshold = data.relevance_threshold;
     this.openai_api_key = data.openai_api_key;
     this.openai_model = data.openai_model;
-    this.openai_base_url = data.openai_base_url || 'https://api.siliconflow.cn/v1';
+    this.openai_base_url = data.openai_base_url || 'https://api.openai.com/v1';
     this.max_results_per_category = data.max_results_per_category || 50;
     this.max_concurrent_requests = data.max_concurrent_requests || 5;
-    this.output_dir = data.output_dir || './output';
-    this.prompts_dir = data.prompts_dir || './prompts';
+    this.output_dir = data.output_dir || 'output';
+    this.prompts_dir = data.prompts_dir || 'prompts';
     this.log_level = data.log_level || 'INFO';
-    this.history_file = data.history_file || './output/history.json';
+    this.history_file = data.history_file || 'history.json';
     this.processed_ids = [];
+    this.prompt_system = data.prompt_system;
+    this.prompt_user_template = data.prompt_user_template;
   }
 
-  static fromFile(configPath: string = path.join(__dirname, '../../config.json')): Config {
-    const raw = this._loadJson(configPath);
-    const parsed = this._parseDomainRules(raw);
+  // 从普通 JS 对象创建配置，适合测试或 CONFIG_JSON 解析后的结果。
+  static fromObject(raw: RawConfig): Config {
+    const parsed = this.parseRawConfig(raw);
     const cfg = new Config(parsed);
-    this._validate(cfg);
-    this._ensureDirs(cfg);
-    this._initLogging(cfg);
-    cfg.processed_ids = this._loadHistory(cfg.history_file);
+    this.validate(cfg);
     return cfg;
   }
 
-  private static _loadJson(path: string): Record<string, unknown> {
-    return JSON.parse(fs.readFileSync(path, 'utf-8'));
+  // 从 JSON 字符串创建配置。CONFIG_JSON 或兼容老 config.json 时会用到。
+  static fromJson(json: string): Config {
+    return this.fromObject(JSON.parse(json) as RawConfig);
   }
 
-  private static _parseDomainRules(raw: Record<string, unknown>): ConfigData {
-    const rulesData = (raw.domain_rules as Array<Record<string, unknown>>) || [];
-    const domain_rules: DomainRule[] = [];
-    
-    for (const item of rulesData) {
-      domain_rules.push({
-        category: String(item.category),
-        mode: item.mode as DomainRule['mode'],
-        filter_categories: (item.filter_categories as string[]) || [],
-      });
-    }
-    
+  // Worker 运行时最主要的入口：把 Cloudflare env 转换成 Config。
+  // 合并策略是：单独的 env 变量优先级更高，CONFIG_JSON 里的值作为兜底。
+  static fromEnv(env: WorkerConfigEnv): Config {
+    const raw = env.CONFIG_JSON
+      ? (JSON.parse(env.CONFIG_JSON) as RawConfig)
+      : {};
+
+    const merged: RawConfig = {
+      ...raw,
+      // KEYWORDS 支持逗号分隔字符串，例如 "llm,agent,reasoning"。
+      keywords: this.envList(env.KEYWORDS, raw.keywords),
+      // DOMAIN_RULES 是结构化数组，所以用 JSON 字符串传入。
+      domain_rules: this.envJson(env.DOMAIN_RULES, raw.domain_rules),
+      relevance_threshold: env.RELEVANCE_THRESHOLD ?? raw.relevance_threshold,
+      openai_api_key: env.OPENAI_API_KEY ?? raw.openai_api_key,
+      openai_model: env.OPENAI_MODEL ?? raw.openai_model,
+      openai_base_url: env.OPENAI_BASE_URL ?? raw.openai_base_url,
+      max_results_per_category: this.envNumber(
+        env.MAX_RESULTS_PER_CATEGORY,
+        raw.max_results_per_category,
+      ),
+      max_concurrent_requests: this.envNumber(
+        env.MAX_CONCURRENT_REQUESTS,
+        raw.max_concurrent_requests,
+      ),
+      output_dir: env.OUTPUT_DIR ?? raw.output_dir,
+      prompts_dir: env.PROMPTS_DIR ?? raw.prompts_dir,
+      log_level: env.LOG_LEVEL ?? raw.log_level,
+      history_file: env.HISTORY_FILE ?? raw.history_file,
+      prompt_system: env.PROMPT_SYSTEM ?? raw.prompt_system,
+      prompt_user_template: env.PROMPT_USER_TEMPLATE ?? raw.prompt_user_template,
+    };
+
+    return this.fromObject(merged);
+  }
+
+  // 保留一个“文件读取适配器”接口，方便以后在 Node 脚本或单元测试里读取 config.json。
+  // 注意：这里不直接 import fs，因为 Worker 里不能使用 Node fs。
+  static fromFile(
+    configPath: string,
+    readText: (path: string) => string,
+  ): Config {
+    return this.fromJson(readText(configPath));
+  }
+
+  // 给 /config 调试接口使用。API Key 属于敏感信息，返回时只显示 ***。
+  toSafeJSON(): Omit<Config, 'openai_api_key'> & { openai_api_key: string } {
     return {
-      ...raw as Omit<ConfigData, 'domain_rules'>,
-      domain_rules,
+      ...this,
+      openai_api_key: this.openai_api_key ? '***' : '',
     };
   }
 
-  private static _validate(cfg: Config): void {
+  // 把来源不确定的 raw 配置规整成 ConfigData。
+  // unknown 表示“我现在还不知道它是什么类型”，所以这里会逐项转换。
+  private static parseRawConfig(raw: RawConfig): ConfigData {
+    const domainRules = this.parseDomainRules(raw.domain_rules);
+    const threshold = String(raw.relevance_threshold || 'MEDIUM').toUpperCase();
+    const logLevel = String(raw.log_level || 'INFO').toUpperCase();
+
+    return {
+      keywords: this.asStringArray(raw.keywords),
+      domain_rules: domainRules,
+      relevance_threshold: threshold as RelevanceLevel,
+      openai_api_key: String(raw.openai_api_key || ''),
+      openai_model: String(raw.openai_model || ''),
+      openai_base_url: this.optionalString(raw.openai_base_url),
+      max_results_per_category: this.optionalNumber(raw.max_results_per_category),
+      max_concurrent_requests: this.optionalNumber(raw.max_concurrent_requests),
+      output_dir: this.optionalString(raw.output_dir),
+      prompts_dir: this.optionalString(raw.prompts_dir),
+      log_level: logLevel as LogLevel,
+      history_file: this.optionalString(raw.history_file),
+      prompt_system: this.optionalString(raw.prompt_system),
+      prompt_user_template: this.optionalString(raw.prompt_user_template),
+    };
+  }
+
+  // 解析 domain_rules。这个配置决定要抓 arXiv 的哪些分类，以及是否用交叉分类过滤。
+  private static parseDomainRules(value: unknown): DomainRule[] {
+    const rulesData = Array.isArray(value) ? value : [];
+
+    return rulesData.map((item) => {
+      const record = item as Record<string, unknown>;
+      return {
+        category: String(record.category || ''),
+        mode: record.mode as DomainRule['mode'],
+        filter_categories: this.asStringArray(record.filter_categories),
+      };
+    });
+  }
+
+  // 集中做配置校验。尽早失败比运行到一半才失败更容易排查。
+  private static validate(cfg: Config): void {
     const errors: string[] = [];
 
     if (!Array.isArray(cfg.keywords) || cfg.keywords.length === 0) {
-      errors.push('keywords: 必填且至少包含 1 项');
+      errors.push('keywords: 必填，且至少包含 1 项');
     } else {
-      for (let i = 0; i < cfg.keywords.length; i++) {
-        if (typeof cfg.keywords[i] !== 'string' || !cfg.keywords[i].trim()) {
-          errors.push(`keywords[${i}]: 须为非空字符串`);
+      cfg.keywords.forEach((keyword, index) => {
+        if (typeof keyword !== 'string' || !keyword.trim()) {
+          errors.push(`keywords[${index}]: 必须为非空字符串`);
         }
-      }
+      });
     }
 
     if (!Array.isArray(cfg.domain_rules) || cfg.domain_rules.length === 0) {
-      errors.push('domain_rules: 必填且不能为空列表');
+      errors.push('domain_rules: 必填，且不能为空数组');
     } else {
-      for (let i = 0; i < cfg.domain_rules.length; i++) {
-        const rule = cfg.domain_rules[i];
+      cfg.domain_rules.forEach((rule, index) => {
         if (typeof rule.category !== 'string' || !rule.category.trim()) {
-          errors.push(`domain_rules[${i}].category: 须为非空字符串`);
+          errors.push(`domain_rules[${index}].category: 必须为非空字符串`);
         }
         if (!DOMAIN_MODES.includes(rule.mode)) {
-          errors.push(`domain_rules[${i}].mode: 须为 ${DOMAIN_MODES.join(', ')} 之一，当前值: ${rule.mode}`);
+          errors.push(
+            `domain_rules[${index}].mode: 必须为 ${DOMAIN_MODES.join(', ')} 之一，当前值: ${rule.mode}`,
+          );
         }
         if (rule.mode === 'categories_filter') {
           if (!Array.isArray(rule.filter_categories) || rule.filter_categories.length === 0) {
-            errors.push(`domain_rules[${i}].filter_categories: categories_filter 模式下至少包含 1 项`);
+            errors.push(
+              `domain_rules[${index}].filter_categories: categories_filter 模式下至少包含 1 项`,
+            );
           } else {
-            for (let j = 0; j < rule.filter_categories.length; j++) {
-              if (typeof rule.filter_categories[j] !== 'string' || !rule.filter_categories[j].trim()) {
-                errors.push(`domain_rules[${i}].filter_categories[${j}]: 须为非空字符串`);
+            rule.filter_categories.forEach((category, categoryIndex) => {
+              if (typeof category !== 'string' || !category.trim()) {
+                errors.push(
+                  `domain_rules[${index}].filter_categories[${categoryIndex}]: 必须为非空字符串`,
+                );
               }
-            }
+            });
           }
         }
-      }
+      });
     }
 
     if (!RELEVANCE_LEVELS.includes(cfg.relevance_threshold)) {
-      errors.push(`relevance_threshold: 须为 ${RELEVANCE_LEVELS.join(', ')} 之一，当前值: ${cfg.relevance_threshold}`);
+      errors.push(
+        `relevance_threshold: 必须为 ${RELEVANCE_LEVELS.join(', ')} 之一，当前值: ${cfg.relevance_threshold}`,
+      );
     }
 
-    if (!Number.isInteger(cfg.max_results_per_category) || cfg.max_results_per_category < 1 || cfg.max_results_per_category > 200) {
-      errors.push('max_results_per_category: 须为整数且范围 1-200');
+    if (
+      !Number.isInteger(cfg.max_results_per_category)
+      || cfg.max_results_per_category < 1
+      || cfg.max_results_per_category > 200
+    ) {
+      errors.push('max_results_per_category: 必须为 1-200 之间的整数');
+    }
+
+    if (
+      !Number.isInteger(cfg.max_concurrent_requests)
+      || cfg.max_concurrent_requests < 1
+      || cfg.max_concurrent_requests > 50
+    ) {
+      errors.push('max_concurrent_requests: 必须为 1-50 之间的整数');
     }
 
     if (typeof cfg.openai_api_key !== 'string' || !cfg.openai_api_key.trim()) {
-      errors.push('openai_api_key: 必填且不能为空');
+      errors.push('openai_api_key: 必填，且不能为空');
     }
 
     if (typeof cfg.openai_model !== 'string' || !cfg.openai_model.trim()) {
-      errors.push('openai_model: 必填且不能为空');
+      errors.push('openai_model: 必填，且不能为空');
     }
 
     if (typeof cfg.output_dir !== 'string' || !cfg.output_dir.trim()) {
-      errors.push('output_dir: 须为非空字符串');
+      errors.push('output_dir: 必须为非空字符串');
     }
 
     if (typeof cfg.prompts_dir !== 'string' || !cfg.prompts_dir.trim()) {
-      errors.push('prompts_dir: 须为非空字符串');
+      errors.push('prompts_dir: 必须为非空字符串');
     }
 
     if (!LOG_LEVELS.includes(cfg.log_level)) {
-      errors.push(`log_level: 须为 ${LOG_LEVELS.join(', ')} 之一，当前值: ${cfg.log_level}`);
+      errors.push(`log_level: 必须为 ${LOG_LEVELS.join(', ')} 之一，当前值: ${cfg.log_level}`);
     }
 
     if (typeof cfg.history_file !== 'string' || !cfg.history_file.trim()) {
-      errors.push('history_file: 须为非空字符串');
+      errors.push('history_file: 必须为非空字符串');
     }
 
     if (errors.length > 0) {
-      throw new Error('配置校验失败:\n' + errors.map(e => `  - ${e}`).join('\n'));
+      throw new Error(`配置校验失败:\n${errors.map(error => `  - ${error}`).join('\n')}`);
     }
   }
 
-  private static _ensureDirs(cfg: Config): void {
-    const dirs = [
-      cfg.output_dir,
-      path.join(cfg.prompts_dir, 'paper_analyzer'),
-      path.join(cfg.output_dir, 'reports'),
-    ];
-
-    for (const dir of dirs) {
-      if (!fs.existsSync(dir)) {
-        fs.mkdirSync(dir, { recursive: true });
-        console.log(`已创建目录: ${dir}`);
-      }
+  // 把数组或逗号分隔字符串统一变成 string[]。
+  // Workers env 只能方便地传字符串，所以这个函数会经常用到。
+  private static asStringArray(value: unknown): string[] {
+    if (Array.isArray(value)) {
+      return value.map(item => String(item).trim()).filter(Boolean);
     }
+    if (typeof value === 'string') {
+      return value.split(',').map(item => item.trim()).filter(Boolean);
+    }
+    return [];
   }
 
-  private static _initLogging(cfg: Config): void {
-    const logPath = path.join(cfg.output_dir, 'sentinel.log');
-    console.log(`日志将输出到: ${logPath}`);
+  // 可选字符串：空字符串会被当作 undefined，这样构造函数可以使用默认值。
+  private static optionalString(value: unknown): string | undefined {
+    if (typeof value !== 'string') {
+      return undefined;
+    }
+    const trimmed = value.trim();
+    return trimmed || undefined;
   }
 
-  private static _loadHistory(historyFile: string): string[] {
-    if (!fs.existsSync(historyFile)) {
-      return [];
+  // 可选数字：既支持真正的 number，也支持 env 中传来的数字字符串。
+  private static optionalNumber(value: unknown): number | undefined {
+    if (typeof value === 'number') {
+      return Number.isFinite(value) ? value : undefined;
     }
-
-    try {
-      const data = JSON.parse(fs.readFileSync(historyFile, 'utf-8'));
-      if (Array.isArray(data)) {
-        return data.filter(item => typeof item === 'string');
-      }
-      return [];
-    } catch {
-      return [];
+    if (typeof value === 'string' && value.trim()) {
+      const parsed = Number(value);
+      return Number.isFinite(parsed) ? parsed : undefined;
     }
+    return undefined;
   }
-}
 
-if (require.main === module) {
-  const cfg = Config.fromFile();
-  console.log(JSON.stringify(cfg, null, 2));
+  // 下面三个 env* helper 的作用是表达“env 没传就用 fallback，传了就覆盖”。
+  private static envList(envValue: string | undefined, fallback: unknown): unknown {
+    return envValue === undefined ? fallback : envValue;
+  }
+
+  private static envJson(envValue: string | undefined, fallback: unknown): unknown {
+    if (envValue === undefined) {
+      return fallback;
+    }
+    return JSON.parse(envValue);
+  }
+
+  private static envNumber(envValue: string | undefined, fallback: unknown): unknown {
+    return envValue === undefined ? fallback : envValue;
+  }
 }

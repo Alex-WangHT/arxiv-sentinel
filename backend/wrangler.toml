@@ -1,0 +1,29 @@
+name = "paper-sniffer-backend"
+main = "src/worker.ts"
+compatibility_date = "2026-05-14"
+workers_dev = true
+
+[vars]
+CONFIG_KV_KEY = "paper-sniffer/config.json"
+
+[[kv_namespaces]]
+binding = "CONFIG_KV"
+id = "00000000000000000000000000000000"
+preview_id = "00000000000000000000000000000000"
+
+[[r2_buckets]]
+binding = "PAPER_RESULTS"
+bucket_name = "paper-sniffer-results"
+preview_bucket_name = "paper-sniffer-results-preview"
+
+[[queues.producers]]
+binding = "PAPER_ANALYSIS_QUEUE"
+queue = "paper-sniffer-analysis"
+
+[[queues.consumers]]
+queue = "paper-sniffer-analysis"
+max_batch_size = 1
+max_batch_timeout = 30
+
+[triggers]
+crons = ["0 1 * * *"]
