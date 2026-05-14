@@ -3,7 +3,7 @@ import { DomainRule } from './models';
 /*
  * 这个文件负责“把外部配置变成程序能安全使用的 Config 对象”。
  *
- * 原来的 Node.js 版本通常会从本地 config.json 读取配置；
+ * 原来的 Node.js 版本通常会从本地 config.json 读取配置；现在不再使用外部 config.json 文件。
  * Cloudflare Workers 没有稳定的本地文件系统，所以这里改成主要从 env 读取。
  *
  * env 可以来自：
@@ -44,7 +44,6 @@ export interface ConfigData {
 // 比如 MAX_RESULTS_PER_CATEGORY 在 wrangler.toml 中写成 "5"，这里先按 string 接收，
 // 后面 parseRawConfig / optionalNumber 会把它转成 number。
 export interface WorkerConfigEnv {
-  CONFIG_JSON?: string;
   KEYWORDS?: string;
   DOMAIN_RULES?: string;
   RELEVANCE_THRESHOLD?: string;
@@ -64,7 +63,7 @@ export interface WorkerConfigEnv {
 type RawConfig = Record<string, unknown>;
 
 // Config 是一个经过解析和校验后的配置对象。
-// 业务代码只依赖这个类，不需要关心配置到底来自 config.json、环境变量还是 secret。
+// 业务代码只依赖这个类，不需要关心配置到底来自 KV、环境变量还是 secret。
 export class Config {
   keywords: string[];
   domain_rules: DomainRule[];
@@ -100,7 +99,7 @@ export class Config {
     this.prompt_user_template = data.prompt_user_template;
   }
 
-  // 从普通 JS 对象创建配置，适合测试或 CONFIG_JSON 解析后的结果。
+  // 从普通 JS 对象创建配置，适合 KV/API 读取后的配置对象。
   static fromObject(raw: RawConfig): Config {
     const parsed = this.parseRawConfig(raw);
     const cfg = new Config(parsed);
@@ -108,54 +107,31 @@ export class Config {
     return cfg;
   }
 
-  // 从 JSON 字符串创建配置。CONFIG_JSON 或兼容老 config.json 时会用到。
-  static fromJson(json: string): Config {
-    return this.fromObject(JSON.parse(json) as RawConfig);
-  }
-
-  // Worker 运行时最主要的入口：把 Cloudflare env 转换成 Config。
-  // 合并策略是：单独的 env 变量优先级更高，CONFIG_JSON 里的值作为兜底。
   static fromEnv(env: WorkerConfigEnv): Config {
-    const raw = env.CONFIG_JSON
-      ? (JSON.parse(env.CONFIG_JSON) as RawConfig)
-      : {};
-
     const merged: RawConfig = {
-      ...raw,
-      // KEYWORDS 支持逗号分隔字符串，例如 "llm,agent,reasoning"。
-      keywords: this.envList(env.KEYWORDS, raw.keywords),
-      // DOMAIN_RULES 是结构化数组，所以用 JSON 字符串传入。
-      domain_rules: this.envJson(env.DOMAIN_RULES, raw.domain_rules),
-      relevance_threshold: env.RELEVANCE_THRESHOLD ?? raw.relevance_threshold,
-      openai_api_key: env.OPENAI_API_KEY ?? raw.openai_api_key,
-      openai_model: env.OPENAI_MODEL ?? raw.openai_model,
-      openai_base_url: env.OPENAI_BASE_URL ?? raw.openai_base_url,
+      keywords: this.envList(env.KEYWORDS, undefined),
+      domain_rules: this.envJson(env.DOMAIN_RULES, undefined),
+      relevance_threshold: env.RELEVANCE_THRESHOLD,
+      openai_api_key: env.OPENAI_API_KEY,
+      openai_model: env.OPENAI_MODEL,
+      openai_base_url: env.OPENAI_BASE_URL,
       max_results_per_category: this.envNumber(
         env.MAX_RESULTS_PER_CATEGORY,
-        raw.max_results_per_category,
+        undefined,
       ),
       max_concurrent_requests: this.envNumber(
         env.MAX_CONCURRENT_REQUESTS,
-        raw.max_concurrent_requests,
+        undefined,
       ),
-      output_dir: env.OUTPUT_DIR ?? raw.output_dir,
-      prompts_dir: env.PROMPTS_DIR ?? raw.prompts_dir,
-      log_level: env.LOG_LEVEL ?? raw.log_level,
-      history_file: env.HISTORY_FILE ?? raw.history_file,
-      prompt_system: env.PROMPT_SYSTEM ?? raw.prompt_system,
-      prompt_user_template: env.PROMPT_USER_TEMPLATE ?? raw.prompt_user_template,
+      output_dir: env.OUTPUT_DIR,
+      prompts_dir: env.PROMPTS_DIR,
+      log_level: env.LOG_LEVEL,
+      history_file: env.HISTORY_FILE,
+      prompt_system: env.PROMPT_SYSTEM,
+      prompt_user_template: env.PROMPT_USER_TEMPLATE,
     };
 
     return this.fromObject(merged);
-  }
-
-  // 保留一个“文件读取适配器”接口，方便以后在 Node 脚本或单元测试里读取 config.json。
-  // 注意：这里不直接 import fs，因为 Worker 里不能使用 Node fs。
-  static fromFile(
-    configPath: string,
-    readText: (path: string) => string,
-  ): Config {
-    return this.fromJson(readText(configPath));
   }
 
   // 给 /config 调试接口使用。API Key 属于敏感信息，返回时只显示 ***。

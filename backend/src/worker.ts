@@ -5,7 +5,7 @@ import {
   SerializedAnalysisResult,
 } from './pipeline';
 
-const DEFAULT_CONFIG_JSON = JSON.stringify({
+const DEFAULT_CONFIG: Record<string, unknown> = {
   keywords: ['large language model', 'agent', 'reasoning'],
   domain_rules: [
     {
@@ -28,7 +28,7 @@ const DEFAULT_CONFIG_JSON = JSON.stringify({
   prompts_dir: 'prompts',
   log_level: 'INFO',
   history_file: 'history.json',
-});
+};
 
 /*
  * 这是 Cloudflare Worker 的入口文件。
@@ -48,6 +48,7 @@ interface Env extends WorkerConfigEnv {
   CONFIG_KV?: KVNamespace;
   CONFIG_KV_KEY?: string;
   PAPER_DB?: D1Database;
+  ADMIN_TOKEN?: string;
 }
 
 // 放进 Cloudflare Queue 的消息格式。
@@ -56,7 +57,13 @@ interface RunMessage {
   type: 'run';
   targetDate?: string;
   requestedAt: string;
-  source: 'http' | 'scheduled';
+  source: 'manual' | 'scheduled';
+}
+
+interface StoredConfig {
+  key: string;
+  source: 'kv' | 'env' | 'default';
+  config: Record<string, unknown>;
 }
 
 // WorkerD1Storage 是 PipelineStorage 的 Cloudflare D1 实现。
@@ -219,25 +226,132 @@ class WorkerD1Storage implements PipelineStorage {
 
 // 从 CONFIG_KV 读取配置 JSON。
 // OPENAI_API_KEY 仍建议作为 secret/env 注入，不建议明文放进 KV。
-async function loadConfig(env: Env): Promise<Config> {
-  const configKey = env.CONFIG_KV_KEY || 'paper-sniffer/config.json';
-  let configJson = env.CONFIG_JSON || DEFAULT_CONFIG_JSON;
+function getConfigKey(env: Env): string {
+  return env.CONFIG_KV_KEY || 'paper-sniffer/config';
+}
 
-  if (env.CONFIG_KV) {
-    const storedConfig = await env.CONFIG_KV.get(configKey);
-    if (storedConfig) {
-      configJson = storedConfig;
-    } else {
-      console.warn(`CONFIG_KV 中没有找到配置: ${configKey}`);
-    }
-  } else {
-    console.warn('未绑定 CONFIG_KV，将尝试从 env/CONFIG_JSON 读取配置');
+function parseConfigJson(json: string): Record<string, unknown> {
+  const parsed = JSON.parse(json) as unknown;
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new Error('配置必须是 JSON 对象');
+  }
+  return parsed as Record<string, unknown>;
+}
+
+function envConfigObject(env: Env): Record<string, unknown> {
+  const config: Record<string, unknown> = {};
+
+  if (env.KEYWORDS !== undefined) {
+    config.keywords = env.KEYWORDS;
+  }
+  if (env.DOMAIN_RULES !== undefined) {
+    config.domain_rules = JSON.parse(env.DOMAIN_RULES) as unknown;
+  }
+  if (env.RELEVANCE_THRESHOLD !== undefined) {
+    config.relevance_threshold = env.RELEVANCE_THRESHOLD;
+  }
+  if (env.OPENAI_MODEL !== undefined) {
+    config.openai_model = env.OPENAI_MODEL;
+  }
+  if (env.OPENAI_BASE_URL !== undefined) {
+    config.openai_base_url = env.OPENAI_BASE_URL;
+  }
+  if (env.MAX_RESULTS_PER_CATEGORY !== undefined) {
+    config.max_results_per_category = env.MAX_RESULTS_PER_CATEGORY;
+  }
+  if (env.MAX_CONCURRENT_REQUESTS !== undefined) {
+    config.max_concurrent_requests = env.MAX_CONCURRENT_REQUESTS;
+  }
+  if (env.OUTPUT_DIR !== undefined) {
+    config.output_dir = env.OUTPUT_DIR;
+  }
+  if (env.PROMPTS_DIR !== undefined) {
+    config.prompts_dir = env.PROMPTS_DIR;
+  }
+  if (env.LOG_LEVEL !== undefined) {
+    config.log_level = env.LOG_LEVEL;
+  }
+  if (env.HISTORY_FILE !== undefined) {
+    config.history_file = env.HISTORY_FILE;
+  }
+  if (env.PROMPT_SYSTEM !== undefined) {
+    config.prompt_system = env.PROMPT_SYSTEM;
+  }
+  if (env.PROMPT_USER_TEMPLATE !== undefined) {
+    config.prompt_user_template = env.PROMPT_USER_TEMPLATE;
   }
 
-  return Config.fromEnv({
-    ...env,
-    CONFIG_JSON: configJson,
+  return config;
+}
+
+function publicConfig(config: Record<string, unknown>): Record<string, unknown> {
+  const sanitized = { ...config };
+  delete sanitized.openai_api_key;
+  delete sanitized.processed_ids;
+  return sanitized;
+}
+
+function normalizeConfigForStorage(rawConfig: unknown): Record<string, unknown> {
+  if (!rawConfig || typeof rawConfig !== 'object' || Array.isArray(rawConfig)) {
+    throw new Error('配置必须是 JSON 对象');
+  }
+
+  const config = publicConfig(rawConfig as Record<string, unknown>);
+  Config.fromObject({
+    ...config,
+    openai_api_key: 'config-api-validation-placeholder',
   });
+
+  return config;
+}
+
+async function readStoredConfig(env: Env): Promise<StoredConfig> {
+  const key = getConfigKey(env);
+
+  if (env.CONFIG_KV) {
+    const storedConfig = await env.CONFIG_KV.get(key);
+    if (storedConfig) {
+      return {
+        key,
+        source: 'kv',
+        config: publicConfig(parseConfigJson(storedConfig)),
+      };
+    }
+
+    console.warn(`CONFIG_KV 中没有找到配置: ${key}`);
+  } else {
+    console.warn('未绑定 CONFIG_KV，将尝试从 env 读取配置');
+  }
+
+  const envConfig = envConfigObject(env);
+  return {
+    key,
+    source: Object.keys(envConfig).length > 0 ? 'env' : 'default',
+    config: publicConfig({
+      ...DEFAULT_CONFIG,
+      ...envConfig,
+    }),
+  };
+}
+
+function configFromStoredConfig(env: Env, storedConfig: StoredConfig): Config {
+  if (storedConfig.source === 'kv') {
+    return Config.fromObject({
+      ...storedConfig.config,
+      openai_api_key: env.OPENAI_API_KEY,
+    });
+  }
+
+  return Config.fromObject({
+    ...storedConfig.config,
+    openai_api_key: env.OPENAI_API_KEY,
+  });
+}
+
+async function loadConfig(env: Env): Promise<Config> {
+  const storedConfig = await readStoredConfig(env);
+  return configFromStoredConfig(env, storedConfig);
+
 }
 
 // 真正执行一次完整任务：
@@ -283,8 +397,7 @@ function parseTargetDate(value: string | null | undefined): Date | undefined {
   return date;
 }
 
-// HTTP POST /run 可以带 JSON body；GET /run 则没有 body。
-// 这个函数统一处理两种情况，避免每个接口重复写判断。
+// 只解析 JSON 请求体；/run 只允许管理员 POST 手动调试。
 async function parseRequestBody(request: Request): Promise<Record<string, unknown>> {
   if (request.method === 'GET' || request.method === 'HEAD') {
     return {};
@@ -303,8 +416,8 @@ function jsonResponse(data: unknown, init: ResponseInit = {}): Response {
   const headers = new Headers(init.headers);
   headers.set('content-type', 'application/json; charset=utf-8');
   headers.set('access-control-allow-origin', '*');
-  headers.set('access-control-allow-methods', 'GET,POST,OPTIONS');
-  headers.set('access-control-allow-headers', 'content-type');
+  headers.set('access-control-allow-methods', 'GET,POST,PUT,OPTIONS');
+  headers.set('access-control-allow-headers', 'content-type, authorization, x-admin-token');
 
   return new Response(JSON.stringify(data, null, 2), {
     ...init,
@@ -313,6 +426,123 @@ function jsonResponse(data: unknown, init: ResponseInit = {}): Response {
 }
 
 // Queue 消息里只需要保存 YYYY-MM-DD，不需要保存完整 Date 对象。
+function getAdminToken(request: Request): string {
+  const authorization = request.headers.get('authorization') || '';
+  if (authorization.toLowerCase().startsWith('bearer ')) {
+    return authorization.slice(7).trim();
+  }
+  return request.headers.get('x-admin-token') || '';
+}
+
+function assertAdmin(request: Request, env: Env): Response | undefined {
+  if (!env.ADMIN_TOKEN) {
+    return jsonResponse(
+      {
+        ok: false,
+        error: 'ADMIN_TOKEN 未配置，管理接口已禁用',
+      },
+      { status: 503 },
+    );
+  }
+
+  if (getAdminToken(request) !== env.ADMIN_TOKEN) {
+    return jsonResponse(
+      {
+        ok: false,
+        error: '未授权',
+      },
+      { status: 401 },
+    );
+  }
+
+  return undefined;
+}
+
+function configResponseBody(storedConfig: StoredConfig, effectiveConfig: Config) {
+  return {
+    ok: true,
+    key: storedConfig.key,
+    source: storedConfig.source,
+    config: storedConfig.config,
+    effective_config: effectiveConfig.toSafeJSON(),
+  };
+}
+
+async function handleConfigApiRequest(request: Request, env: Env): Promise<Response> {
+  const unauthorized = assertAdmin(request, env);
+  if (unauthorized) {
+    return unauthorized;
+  }
+
+  if (request.method === 'GET') {
+    const storedConfig = await readStoredConfig(env);
+    return jsonResponse(configResponseBody(storedConfig, await loadConfig(env)));
+  }
+
+  if (request.method === 'PUT') {
+    if (!env.CONFIG_KV) {
+      return jsonResponse(
+        {
+          ok: false,
+          error: 'CONFIG_KV 未绑定，无法保存配置',
+        },
+        { status: 503 },
+      );
+    }
+
+    const config = normalizeConfigForStorage(await request.json());
+    const configJson = JSON.stringify(config, null, 2);
+    const key = getConfigKey(env);
+    await env.CONFIG_KV.put(key, configJson);
+
+    const storedConfig: StoredConfig = {
+      key,
+      source: 'kv',
+      config,
+    };
+    const effectiveConfig = configFromStoredConfig(env, storedConfig);
+
+    return jsonResponse(configResponseBody(storedConfig, effectiveConfig));
+  }
+
+  return jsonResponse(
+    {
+      ok: false,
+      error: 'Method not allowed',
+    },
+    { status: 405 },
+  );
+}
+
+async function handleConfigValidateRequest(request: Request, env: Env): Promise<Response> {
+  const unauthorized = assertAdmin(request, env);
+  if (unauthorized) {
+    return unauthorized;
+  }
+
+  if (request.method !== 'POST') {
+    return jsonResponse(
+      {
+        ok: false,
+        error: 'Method not allowed',
+      },
+      { status: 405 },
+    );
+  }
+
+  const config = normalizeConfigForStorage(await request.json());
+  const effectiveConfig = Config.fromObject({
+    ...config,
+    openai_api_key: env.OPENAI_API_KEY || 'config-api-validation-placeholder',
+  });
+
+  return jsonResponse({
+    ok: true,
+    config,
+    effective_config: effectiveConfig.toSafeJSON(),
+  });
+}
+
 function formatDate(date?: Date): string | undefined {
   if (!date) {
     return undefined;
@@ -324,10 +554,24 @@ function formatDate(date?: Date): string | undefined {
   return `${year}-${month}-${day}`;
 }
 
-// /run 和 /queue 都走这里。
-// 默认行为：如果绑定了 Queue，就把任务排队并返回 202；
-// 调试时加 ?sync=true，可以让请求等待任务完成并直接返回结果。
+// /run 是管理员手动调试入口，不是后台任务的常规启动方式。
+// 线上常规执行由 scheduled() 通过 Cron Trigger 自动启动。
 async function handleRunRequest(request: Request, env: Env): Promise<Response> {
+  const unauthorized = assertAdmin(request, env);
+  if (unauthorized) {
+    return unauthorized;
+  }
+
+  if (request.method !== 'POST') {
+    return jsonResponse(
+      {
+        ok: false,
+        error: 'Method not allowed',
+      },
+      { status: 405 },
+    );
+  }
+
   const url = new URL(request.url);
   const body = await parseRequestBody(request);
   const bodyDate = typeof body.date === 'string'
@@ -343,7 +587,7 @@ async function handleRunRequest(request: Request, env: Env): Promise<Response> {
       type: 'run',
       targetDate: formatDate(targetDate),
       requestedAt: new Date().toISOString(),
-      source: 'http',
+      source: 'manual',
     });
 
     if (queued) {
@@ -351,6 +595,7 @@ async function handleRunRequest(request: Request, env: Env): Promise<Response> {
         {
           ok: true,
           queued: true,
+          mode: 'manual',
           targetDate: formatDate(targetDate) || 'auto',
         },
         { status: 202 },
@@ -360,7 +605,7 @@ async function handleRunRequest(request: Request, env: Env): Promise<Response> {
 
   // 没有 Queue 或 sync=true 时，直接在当前 HTTP 请求里跑完整流程。
   const result = await runPipeline(env, targetDate);
-  return jsonResponse({ ok: true, queued: false, result });
+  return jsonResponse({ ok: true, queued: false, mode: 'manual', result });
 }
 
 export default {
@@ -368,8 +613,8 @@ export default {
   // 常用路由：
   // - GET /health: 检查服务是否活着
   // - GET /config: 查看脱敏后的配置
-  // - POST /run: 排队执行
-  // - POST /run?sync=true: 同步执行，适合本地调试
+  // - POST /run: 管理员手动调试入口
+  // - POST /run?sync=true: 管理员同步调试入口
   async fetch(request: Request, env: Env): Promise<Response> {
     if (request.method === 'OPTIONS') {
       return jsonResponse({ ok: true });
@@ -382,11 +627,19 @@ export default {
         return jsonResponse({ ok: true, service: 'PaperSniffer', runtime: 'cloudflare-workers' });
       }
 
+      if (url.pathname === '/api/config') {
+        return await handleConfigApiRequest(request, env);
+      }
+
+      if (url.pathname === '/api/config/validate') {
+        return await handleConfigValidateRequest(request, env);
+      }
+
       if (url.pathname === '/config') {
         return jsonResponse((await loadConfig(env)).toSafeJSON());
       }
 
-      if (url.pathname === '/run' || url.pathname === '/queue') {
+      if (url.pathname === '/run') {
         return await handleRunRequest(request, env);
       }
 
@@ -394,7 +647,15 @@ export default {
         {
           ok: false,
           message: 'Not found',
-          routes: ['GET /health', 'GET /config', 'POST /run', 'POST /run?sync=true'],
+          routes: [
+            'GET /health',
+            'GET /config',
+            'GET /api/config',
+            'PUT /api/config',
+            'POST /api/config/validate',
+            'POST /run (admin manual only)',
+            'POST /run?sync=true (admin manual only)',
+          ],
         },
         { status: 404 },
       );
@@ -412,19 +673,25 @@ export default {
 
   // Cron 定时入口。
   // wrangler.toml 里的 [triggers].crons 会决定它什么时候触发。
-  async scheduled(_controller: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
+  async scheduled(controller: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
     const message: RunMessage = {
       type: 'run',
       requestedAt: new Date().toISOString(),
       source: 'scheduled',
     };
 
+    console.info(`Scheduled run triggered by cron: ${controller.cron}`);
+
     // waitUntil 告诉 Workers：即使 scheduled 函数返回了，也继续等待这个异步任务完成。
     ctx.waitUntil(
       enqueueRun(env, message).then(async queued => {
-        if (!queued) {
-          await runPipeline(env);
+        if (queued) {
+          console.info('Scheduled run enqueued');
+          return;
         }
+
+        console.warn('PAPER_ANALYSIS_QUEUE 未绑定，scheduled 将直接执行 Pipeline');
+        await runPipeline(env);
       }),
     );
   },

@@ -9,6 +9,7 @@
     "build": "tsc -p backend/tsconfig.json",
     "typecheck": "tsc --noEmit -p backend/tsconfig.json",
     "dev": "wrangler dev --config backend/wrangler.toml --local",
+    "dev:scheduled": "wrangler dev --config backend/wrangler.toml --local --test-scheduled",
     "deploy": "wrangler deploy --config backend/wrangler.toml",
     "tail": "wrangler tail --config backend/wrangler.toml"
   },

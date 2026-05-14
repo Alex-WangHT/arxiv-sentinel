@@ -17,9 +17,6 @@ backend/.wrangler/
 !.env.example
 .dev.vars
 backend/.dev.vars
-config.json
-config.local.json
-*.local.json
 
 # Runtime output
 output/
