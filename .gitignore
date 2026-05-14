@@ -1,46 +1,41 @@
-# Python 编译文件
-__pycache__/
-*.pyc
-*.pyo
-*.pyd
-.Python
+# Dependencies
+node_modules/
 
-# 虚拟环境
-venv/
-.venv/
-env/
-ENV/
+# Build output
+dist/
+backend/dist/
+build/
+coverage/
 
-# 输出目录
+# Cloudflare Wrangler local state
+.wrangler/
+backend/.wrangler/
+
+# Environment and secrets
+.env
+.env.*
+!.env.example
+.dev.vars
+backend/.dev.vars
+
+# Runtime output
 output/
-
-# 日志文件
+backend/output/
+logs/
 *.log
 
-# 配置文件（包含敏感信息）
-config.json
+# TypeScript cache
+*.tsbuildinfo
 
-# IDE 和编辑器文件
+# Editor and OS files
 .vscode/
 .idea/
 *.swp
 *.swo
 *~
-
-# 操作系统文件
 .DS_Store
 Thumbs.db
 
-# 临时文件
+# Temporary files
 *.tmp
 *.temp
-
-# 测试报告
-htmlcov/
-.coverage
-.pytest_cache/
-.tox/
-
-# Jupyter 笔记本
-.ipynb_checkpoints/
-

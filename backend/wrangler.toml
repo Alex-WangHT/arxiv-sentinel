@@ -1,0 +1,34 @@
+name = "paper-sniffer-backend"
+main = "src/worker.ts"
+compatibility_date = "2026-05-14"
+workers_dev = true
+
+[vars]
+CONFIG_KV_KEY = "paper-sniffer/config"
+
+[[kv_namespaces]]
+binding = "CONFIG_KV"
+id = "ba361a96c8f645df9df90bdabf95e0b1"
+
+# D1 stores analysis results and processed-paper history.
+# Fill database_id after running:
+# npx.cmd wrangler d1 create paper-sniffer-db --config backend/wrangler.toml
+#
+[[d1_databases]]
+binding = "PAPER_DB"
+database_name = "paper-sniffer-db"
+database_id = "d09b6cee-ab8e-456c-8bca-a19a51df8a78"
+
+[[queues.producers]]
+binding = "PAPER_ANALYSIS_QUEUE"
+queue = "paper-sniffer-analysis"
+
+[[queues.consumers]]
+queue = "paper-sniffer-analysis"
+max_batch_size = 1
+max_batch_timeout = 30
+
+# Cron triggers the background paper-sniffing task automatically.
+# Cloudflare cron expressions use UTC; 0 1 * * * is 09:00 in Asia/Shanghai.
+[triggers]
+crons = ["0 1 * * *"]

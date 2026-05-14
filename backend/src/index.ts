@@ -4,3 +4,4 @@ export { LlmClient } from './llm_client';
 export { ArxivSniffer } from './arxiv_sniffer';
 export { PaperAnalyzer } from './paper_analyzer';
 export { Pipeline } from './pipeline';
+export type { PipelineStorage, SerializedAnalysisResult } from './pipeline';
