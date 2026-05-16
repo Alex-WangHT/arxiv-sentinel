@@ -16,7 +16,7 @@ backend/.wrangler/
 .env.*
 !.env.example
 .dev.vars
-backend/.dev.vars
+backend/script/config/.dev.vars
 
 # Runtime output
 output/

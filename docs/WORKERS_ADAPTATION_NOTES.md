@@ -30,20 +30,20 @@ Cron Trigger
   -> D1 保存结果和历史
 ```
 
-HTTP 路由只用于健康检查、配置管理和管理员手动调试，不是正式任务启动方式。
+HTTP 路由只用于健康检查、配置管理、**分析结果只读查询**和管理员手动调试，不是正式任务启动方式。
 
 ## 2. 配置来源
 
 项目不再通过仓库外层的 `config.json` 文件配置。当前配置来源收敛为：
 
-- 本地开发密钥：`backend/.dev.vars`
+- 本地开发密钥：`backend/script/config/.dev.vars`（由 `backend/script/deploy.sh` 从 shell 环境变量生成）
 - 线上密钥：Cloudflare Secrets
 - 前端可编辑配置：`CONFIG_KV`，默认 key 是 `paper-sniffer/config`
 - KV 未配置时的兜底：Worker 内置默认配置，可被 env 覆盖
 
 `OPENAI_API_KEY` 不保存到 KV，仍然通过 `.dev.vars` 或 Cloudflare Secret 注入。
 
-配置管理接口见 [config-api.md](config-api.md)。
+HTTP API 说明见 [api.md](api.md)。
 
 ## 3. 为什么使用 D1 保存结果
 
@@ -56,8 +56,11 @@ export interface PipelineStorage {
   loadHistory(...): Promise<string[]>;
   saveResults(...): Promise<string>;
   saveHistory(...): Promise<void>;
+  listAnalysisResults(query: AnalysisResultsQuery): Promise<AnalysisResultRecord[]>;
 }
 ```
+
+（完整类型见 `backend/src/pipeline.ts`。）
 
 D1 中会自动创建两张表：
 
@@ -78,7 +81,7 @@ D1 中会自动创建两张表：
 
 - 已处理论文历史。
 - 分析结果。
-- 后续前端查询结果时也应该从 D1 读取。
+- 前端或其它客户端通过 **`GET /api/analysis-results`**（Worker HTTP，见 [api.md](api.md)）只读查询 `analysis_results`，不直连 D1。
 
 `PAPER_ANALYSIS_QUEUE` 负责异步任务：
 
@@ -103,6 +106,7 @@ queue()
 ```text
 GET  /health
 GET  /config
+GET  /api/analysis-results
 GET  /api/config
 PUT  /api/config
 POST /api/config/validate
@@ -110,7 +114,7 @@ POST /run
 POST /run?sync=true
 ```
 
-`POST /run` 是管理员手动调试入口，必须带 `ADMIN_TOKEN`。普通请求不会启动任务。
+`POST /run` 是管理员手动调试入口；所有需鉴权的 HTTP 路由统一使用请求头 `Authorization: Bearer <ADMIN_TOKEN>`。普通请求不会启动任务。
 
 ## 6. 本地调试命令
 
@@ -120,18 +124,18 @@ POST /run?sync=true
 npm.cmd install
 ```
 
-准备本地密钥：
+准备本地密钥变量。`deploy.sh` 不读取现成 `.dev.vars`，必须从 shell 环境变量生成：
 
 ```powershell
-Copy-Item backend/.dev.vars.example backend/.dev.vars
-notepad backend/.dev.vars
+$env:OPENAI_API_KEY = "sk-your-real-key"
+$env:ADMIN_TOKEN = "local-dev-token"
 ```
 
-`.dev.vars` 至少需要：
+等价的 Git Bash 写法：
 
-```text
-OPENAI_API_KEY=sk-your-real-key
-ADMIN_TOKEN=local-dev-token
+```bash
+export OPENAI_API_KEY=sk-your-real-key
+export ADMIN_TOKEN=local-dev-token
 ```
 
 检查类型并编译：
@@ -141,10 +145,30 @@ npm.cmd run typecheck
 npm.cmd run build
 ```
 
-启动本地 Worker：
+启动本地 Worker（任选其一）：
+
+- 已准备好 `backend/script/config/.dev.vars` 时：
 
 ```powershell
 npm.cmd run dev
+```
+
+- 或一条命令完成「从 shell 变量生成 `backend/script/config/.dev.vars` + typecheck + build + wrangler dev」（需已安装 Git Bash 或 WSL 的 `bash`）：
+
+```powershell
+npm.cmd run deploy:local
+```
+
+本地 Worker 启动后，可以运行本地 API smoke test（需 `bash`）：
+
+```powershell
+npm.cmd run test:local
+```
+
+云端 API smoke test 需要传入 Worker URL：
+
+```powershell
+npm.cmd run test:cloud -- https://paper-sniffer-backend.<your-subdomain>.workers.dev
 ```
 
 模拟 Cron：

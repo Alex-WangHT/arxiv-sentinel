@@ -5,13 +5,20 @@ export interface DomainRule {
 }
 
 export interface Paper {
-  arxiv_id: string;
+  id: string;        // 唯一标识符。对于 arXiv 是 ID，对于其他来源可能是 DOI 或带前缀的 ID
+  source: string;    // 来源标识，如 'arxiv', 'semantic_scholar'
   title: string;
   abstract: string;
   authors: string[];
   categories: string[];
-  pdf_url: string;
+  paper_url: string;
   published: string;
+}
+
+
+export interface PaperSniffer {
+  readonly name: string;
+  sniff(targetDate?: Date): Promise<Paper[]>;
 }
 
 export interface AnalysisResult {
