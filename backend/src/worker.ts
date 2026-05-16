@@ -10,8 +10,17 @@ import {
   type AnalysisResultRecord,
   type AnalysisResultsQuery,
 } from './pipeline';
+import type { Paper } from './models';
 
 const BEIJING_TIME_OFFSET_MS = 8 * 60 * 60 * 1000;
+const SNIFF_PROGRESS_PERCENT = 10;
+
+function analysisProgressPercent(processed: number, total: number): number {
+  if (total <= 0) {
+    return 100;
+  }
+  return SNIFF_PROGRESS_PERCENT + (processed / total) * (100 - SNIFF_PROGRESS_PERCENT);
+}
 
 const DEFAULT_CONFIG: Record<string, unknown> = {
   keywords: ['large language model', 'agent', 'reasoning'],
@@ -73,6 +82,7 @@ interface Env extends WorkerConfigEnv {
 // Queue 里只放“要跑一次任务”的意图，不直接放论文内容，避免消息过大。
 interface RunMessage {
   type: 'run';
+  phase?: 'sniff' | 'analyze';
   runId?: string;
   targetDate?: string;
   requestedAt: string;
@@ -220,8 +230,41 @@ function mapPipelineRunRow(row: PipelineRunDbRow): PipelineRunRecord {
 // paper_analyzer 的输出是结构化字段，适合落到 SQL 表里，之后可以按日期、score、分类等查询。
 class WorkerD1Storage implements PipelineStorage {
   private schemaReady?: Promise<void>;
+  // D1's SQLite variable limit is lower than regular SQLite builds.
+  // Keep each multi-row INSERT below the limit, then submit chunks via D1 batch()
+  // so Workers subrequests stay low even when a run analyzes many papers.
+  private static readonly D1_SQL_VARIABLE_LIMIT = 100;
+  private static readonly RESULT_INSERT_VARIABLES_PER_ROW = 15;
+  private static readonly HISTORY_INSERT_VARIABLES_PER_ROW = 2;
+  private static readonly RESULT_INSERT_CHUNK_SIZE = Math.floor(
+    WorkerD1Storage.D1_SQL_VARIABLE_LIMIT / WorkerD1Storage.RESULT_INSERT_VARIABLES_PER_ROW,
+  );
+  private static readonly HISTORY_INSERT_CHUNK_SIZE = Math.floor(
+    WorkerD1Storage.D1_SQL_VARIABLE_LIMIT / WorkerD1Storage.HISTORY_INSERT_VARIABLES_PER_ROW,
+  );
+  private static readonly BATCH_STATEMENT_CHUNK_SIZE = 25;
+  private static readonly ANALYSIS_BATCH_SIZE = 5;
 
   constructor(private db?: D1Database) {}
+
+  private chunkArray<T>(items: T[], size: number): T[][] {
+    const chunks: T[][] = [];
+    for (let i = 0; i < items.length; i += size) {
+      chunks.push(items.slice(i, i + size));
+    }
+    return chunks;
+  }
+
+  private async runStatements(statements: D1PreparedStatement[]): Promise<void> {
+    if (!this.db || statements.length === 0) {
+      return;
+    }
+
+    const batches = this.chunkArray(statements, WorkerD1Storage.BATCH_STATEMENT_CHUNK_SIZE);
+    for (const batch of batches) {
+      await this.db.batch(batch);
+    }
+  }
 
   async loadHistory(_historyKey: string): Promise<string[]> {
     if (!this.db) {
@@ -258,8 +301,37 @@ class WorkerD1Storage implements PipelineStorage {
     await this.ensureSchema();
 
     const savedAt = new Date().toISOString();
-    for (const result of results) {
-      await this.db.prepare(`
+    const chunks = this.chunkArray(results, WorkerD1Storage.RESULT_INSERT_CHUNK_SIZE);
+    const statements: D1PreparedStatement[] = [];
+
+    for (const chunk of chunks) {
+      if (chunk.length === 0) {
+        continue;
+      }
+
+      const placeholders = chunk
+        .map(() => '(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+        .join(', ');
+
+      const values = chunk.flatMap(result => [
+        targetDate,
+        result.id,
+        result.title,
+        result.abstract,
+        JSON.stringify(result.authors),
+        JSON.stringify(result.categories),
+        result.paper_url,
+        result.published,
+        result.score,
+        result.reason,
+        result.core_methods,
+        result.problem,
+        JSON.stringify(result.keywords),
+        savedAt,
+        savedAt,
+      ]);
+
+      statements.push(this.db.prepare(`
         INSERT INTO analysis_results (
           target_date,
           paper_id,
@@ -277,7 +349,7 @@ class WorkerD1Storage implements PipelineStorage {
           created_at,
           updated_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES ${placeholders}
         ON CONFLICT(target_date, paper_id) DO UPDATE SET
           title = excluded.title,
           abstract = excluded.abstract,
@@ -291,24 +363,10 @@ class WorkerD1Storage implements PipelineStorage {
           problem = excluded.problem,
           keywords_json = excluded.keywords_json,
           updated_at = excluded.updated_at
-      `).bind(
-        targetDate,
-        result.id,
-        result.title,
-        result.abstract,
-        JSON.stringify(result.authors),
-        JSON.stringify(result.categories),
-        result.paper_url,
-        result.published,
-        result.score,
-        result.reason,
-        result.core_methods,
-        result.problem,
-        JSON.stringify(result.keywords),
-        savedAt,
-        savedAt,
-      ).run();
+      `).bind(...values));
     }
+
+    await this.runStatements(statements);
 
     return `d1://analysis_results?target_date=${targetDate}&count=${results.length}`;
   }
@@ -340,14 +398,127 @@ class WorkerD1Storage implements PipelineStorage {
 
     await this.ensureSchema();
 
+    const uniqueIds = [...new Set(ids)].filter(Boolean);
     const processedAt = new Date().toISOString();
-    for (const id of ids) {
-      await this.db.prepare(`
+    const chunks = this.chunkArray(uniqueIds, WorkerD1Storage.HISTORY_INSERT_CHUNK_SIZE);
+    const statements: D1PreparedStatement[] = [];
+
+    for (const chunk of chunks) {
+      if (chunk.length === 0) {
+        continue;
+      }
+
+      const placeholders = chunk.map(() => '(?, ?)').join(', ');
+      const values = chunk.flatMap(id => [id, processedAt]);
+
+      statements.push(this.db.prepare(`
         INSERT INTO processed_papers (paper_id, processed_at)
-        VALUES (?, ?)
+        VALUES ${placeholders}
         ON CONFLICT(paper_id) DO UPDATE SET processed_at = excluded.processed_at
-      `).bind(id, processedAt).run();
+      `).bind(...values));
     }
+
+    await this.runStatements(statements);
+  }
+
+  async saveRunPapers(runId: string, papers: Paper[]): Promise<void> {
+    if (!this.db) {
+      return;
+    }
+
+    await this.ensureSchema();
+
+    const now = new Date().toISOString();
+    const statements = papers.map((paper, index) => this.db!.prepare(`
+      INSERT INTO pipeline_run_papers (
+        run_id,
+        paper_id,
+        paper_json,
+        position,
+        created_at,
+        updated_at
+      )
+      VALUES (?, ?, ?, ?, ?, ?)
+      ON CONFLICT(run_id, paper_id) DO UPDATE SET
+        paper_json = excluded.paper_json,
+        position = excluded.position,
+        updated_at = excluded.updated_at
+    `).bind(
+      runId,
+      paper.id,
+      JSON.stringify(paper),
+      index,
+      now,
+      now,
+    ));
+
+    await this.runStatements(statements);
+  }
+
+  async loadNextRunPaperBatch(
+    runId: string,
+    limit = WorkerD1Storage.ANALYSIS_BATCH_SIZE,
+  ): Promise<Paper[]> {
+    if (!this.db) {
+      return [];
+    }
+
+    await this.ensureSchema();
+    const { results } = await this.db.prepare(`
+      SELECT paper_json
+      FROM pipeline_run_papers
+      WHERE run_id = ? AND analyzed_at IS NULL
+      ORDER BY position ASC
+      LIMIT ?
+    `).bind(runId, limit).all<{ paper_json: string }>();
+
+    return (results || [])
+      .map(row => {
+        try {
+          return JSON.parse(row.paper_json) as Paper;
+        } catch {
+          return undefined;
+        }
+      })
+      .filter((paper): paper is Paper => Boolean(paper?.id));
+  }
+
+  async getRunPaperCounts(runId: string): Promise<{ total: number; analyzed: number }> {
+    if (!this.db) {
+      return { total: 0, analyzed: 0 };
+    }
+
+    await this.ensureSchema();
+    const row = await this.db.prepare(`
+      SELECT
+        COUNT(*) AS total,
+        SUM(CASE WHEN analyzed_at IS NOT NULL THEN 1 ELSE 0 END) AS analyzed
+      FROM pipeline_run_papers
+      WHERE run_id = ?
+    `).bind(runId).first<{ total: number; analyzed: number | null }>();
+
+    return {
+      total: row?.total ?? 0,
+      analyzed: row?.analyzed ?? 0,
+    };
+  }
+
+  async markRunPapersAnalyzed(runId: string, paperIds: string[]): Promise<void> {
+    if (!this.db || paperIds.length === 0) {
+      return;
+    }
+
+    await this.ensureSchema();
+
+    const now = new Date().toISOString();
+    const statements = [...new Set(paperIds)].map(paperId => this.db!.prepare(`
+      UPDATE pipeline_run_papers
+      SET analyzed_at = ?,
+          updated_at = ?
+      WHERE run_id = ? AND paper_id = ?
+    `).bind(now, now, runId, paperId));
+
+    await this.runStatements(statements);
   }
 
   async createPipelineRun(
@@ -573,6 +744,22 @@ class WorkerD1Storage implements PipelineStorage {
         CREATE INDEX IF NOT EXISTS idx_pipeline_runs_target_date
           ON pipeline_runs(target_date, updated_at)
       `,
+      `
+        CREATE TABLE IF NOT EXISTS pipeline_run_papers (
+          run_id TEXT NOT NULL,
+          paper_id TEXT NOT NULL,
+          paper_json TEXT NOT NULL,
+          position INTEGER NOT NULL,
+          analyzed_at TEXT,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          PRIMARY KEY (run_id, paper_id)
+        )
+      `,
+      `
+        CREATE INDEX IF NOT EXISTS idx_pipeline_run_papers_pending
+          ON pipeline_run_papers(run_id, analyzed_at, position)
+      `,
     ];
 
     for (const statement of statements) {
@@ -730,6 +917,185 @@ async function runPipeline(env: Env, targetDate?: Date, runId?: string) {
     runId ? storage.createProgressSink(runId) : undefined,
   );
   return await pipeline.run(targetDate);
+}
+
+async function createPipelineContext(env: Env, runId: string) {
+  const config = await loadConfig(env);
+  const storage = new WorkerD1Storage(env.PAPER_DB);
+  config.processed_ids = await storage.loadHistory(config.history_file);
+  const progressSink = storage.createProgressSink(runId);
+  const pipeline = new Pipeline(config, storage, progressSink);
+  return { config, storage, pipeline, progressSink };
+}
+
+async function runSniffStage(
+  env: Env,
+  targetDate: Date | undefined,
+  targetDateRaw: string,
+  runId: string,
+  source: RunMessage['source'],
+): Promise<void> {
+  const { storage, pipeline, progressSink } = await createPipelineContext(env, runId);
+
+  await progressSink.update({
+    targetDate: targetDateRaw,
+    status: 'running',
+    progress: 2,
+    step: '嗅探准备',
+    message: '正在读取配置和历史记录，准备一次性嗅探论文',
+  });
+
+  await progressSink.update({
+    targetDate: targetDateRaw,
+    status: 'running',
+    progress: 5,
+    step: '嗅探论文',
+    message: '正在从已启用来源一次性获取当日论文',
+  });
+
+  const papers = await pipeline.sniffPapers(targetDate);
+  await storage.saveRunPapers(runId, papers);
+
+  if (papers.length === 0) {
+    await progressSink.update({
+      targetDate: targetDateRaw,
+      status: 'completed',
+      progress: 100,
+      step: '完成',
+      message: '嗅探完成，没有新论文需要分析',
+      totalFetched: 0,
+      totalAnalyzed: 0,
+    });
+    return;
+  }
+
+  await progressSink.update({
+    targetDate: targetDateRaw,
+    status: 'running',
+    progress: SNIFF_PROGRESS_PERCENT,
+    step: '嗅探完成',
+    message: `一次性嗅探完成，已缓存 ${papers.length} 篇论文；分析批次已进入队列`,
+    totalFetched: papers.length,
+    totalAnalyzed: 0,
+  });
+
+  await env.PAPER_ANALYSIS_QUEUE?.send({
+    type: 'run',
+    phase: 'analyze',
+    runId,
+    targetDate: targetDateRaw,
+    requestedAt: new Date().toISOString(),
+    source,
+  });
+}
+
+async function runAnalyzeStage(
+  env: Env,
+  targetDateRaw: string,
+  runId: string,
+  source: RunMessage['source'],
+): Promise<void> {
+  const { storage, pipeline, progressSink } = await createPipelineContext(env, runId);
+  const countsBefore = await storage.getRunPaperCounts(runId);
+  const papers = await storage.loadNextRunPaperBatch(runId);
+
+  if (papers.length === 0) {
+    await progressSink.update({
+      targetDate: targetDateRaw,
+      status: 'completed',
+      progress: 100,
+      step: '完成',
+      message: `所有队列批次已完成，累计分析 ${countsBefore.analyzed} 篇论文`,
+      totalFetched: countsBefore.total,
+      totalAnalyzed: countsBefore.analyzed,
+    });
+    return;
+  }
+
+  const batchSize = papers.length;
+  await progressSink.update({
+    targetDate: targetDateRaw,
+    status: 'running',
+    progress: analysisProgressPercent(countsBefore.analyzed, countsBefore.total),
+    step: '队列批次开始',
+    message: `Worker 已开始处理下一批论文，本批 ${batchSize} 篇；此前已完成 ${countsBefore.analyzed}/${countsBefore.total} 篇`,
+    totalFetched: countsBefore.total,
+    totalAnalyzed: countsBefore.analyzed,
+  });
+
+  const analyzedResults = await pipeline.analyzePapers(
+    papers,
+    async (completed, batchTotal) => {
+      const cumulativeAnalyzed = countsBefore.analyzed + completed;
+      await progressSink.update({
+        targetDate: targetDateRaw,
+        status: 'running',
+        progress: analysisProgressPercent(cumulativeAnalyzed, countsBefore.total),
+        step: '分析论文',
+        message: `当前队列批次正在分析论文，已完成 ${completed}/${batchTotal} 篇；累计 ${cumulativeAnalyzed}/${countsBefore.total} 篇`,
+        totalFetched: countsBefore.total,
+        totalAnalyzed: cumulativeAnalyzed,
+      });
+    },
+  );
+
+  await progressSink.update({
+    targetDate: targetDateRaw,
+    status: 'running',
+    progress: analysisProgressPercent(countsBefore.analyzed + analyzedResults.length, countsBefore.total),
+    step: '保存结果',
+    message: `正在保存本批次 ${analyzedResults.length} 篇论文的分析结果`,
+    totalFetched: countsBefore.total,
+    totalAnalyzed: countsBefore.analyzed + analyzedResults.length,
+  });
+  await pipeline.saveResults(analyzedResults, targetDateRaw);
+
+  await progressSink.update({
+    targetDate: targetDateRaw,
+    status: 'running',
+    progress: analysisProgressPercent(countsBefore.analyzed + analyzedResults.length, countsBefore.total),
+    step: '更新历史',
+    message: '正在标记本批次论文为已处理',
+    totalFetched: countsBefore.total,
+    totalAnalyzed: countsBefore.analyzed + analyzedResults.length,
+  });
+  await pipeline.updateHistory(papers);
+  await storage.markRunPapersAnalyzed(runId, papers.map(paper => paper.id));
+
+  const countsAfter = await storage.getRunPaperCounts(runId);
+  const hasRemaining = countsAfter.analyzed < countsAfter.total;
+
+  if (hasRemaining) {
+    await env.PAPER_ANALYSIS_QUEUE?.send({
+      type: 'run',
+      phase: 'analyze',
+      runId,
+      targetDate: targetDateRaw,
+      requestedAt: new Date().toISOString(),
+      source,
+    });
+
+    await progressSink.update({
+      targetDate: targetDateRaw,
+      status: 'running',
+      progress: analysisProgressPercent(countsAfter.analyzed, countsAfter.total),
+      step: '等待下一批',
+      message: `本批次完成 ${analyzedResults.length} 篇，累计完成 ${countsAfter.analyzed}/${countsAfter.total} 篇；下一批已进入队列`,
+      totalFetched: countsAfter.total,
+      totalAnalyzed: countsAfter.analyzed,
+    });
+    return;
+  }
+
+  await progressSink.update({
+    targetDate: targetDateRaw,
+    status: 'completed',
+    progress: 100,
+    step: '完成',
+    message: `所有队列批次已完成，累计分析 ${countsAfter.analyzed} 篇论文`,
+    totalFetched: countsAfter.total,
+    totalAnalyzed: countsAfter.analyzed,
+  });
 }
 
 // 尝试把任务发到 Queue。
@@ -1056,6 +1422,7 @@ async function handleRunRequest(request: Request, env: Env): Promise<Response> {
     try {
       const queued = await enqueueRun(env, {
         type: 'run',
+        phase: 'sniff',
         runId: run.run_id,
         targetDate: targetDateStr,
         requestedAt: new Date().toISOString(),
@@ -1088,9 +1455,33 @@ async function handleRunRequest(request: Request, env: Env): Promise<Response> {
     }
   }
 
-  // 没有 Queue 或 sync=true 时，直接在当前 HTTP 请求里跑完整流程。
+  if (!sync) {
+    await storage.createProgressSink(run.run_id).update({
+      targetDate: targetDateStr,
+      status: 'failed',
+      progress: 0,
+      step: '未配置队列',
+      message: 'PAPER_ANALYSIS_QUEUE 未绑定；为避免单次 Worker 请求内执行完整 Pipeline 导致 subrequests 超限，已拒绝同步执行',
+      level: 'error',
+      error: 'PAPER_ANALYSIS_QUEUE 未绑定',
+    });
+
+    return jsonResponse(
+      {
+        ok: false,
+        queued: false,
+        mode: 'manual',
+        targetDate: targetDateStr,
+        run,
+        error: 'PAPER_ANALYSIS_QUEUE 未绑定。请绑定 Queue 后重试，或仅在小数据量调试时显式使用 /run?sync=true。',
+      },
+      { status: 503 },
+    );
+  }
+
+  // sync=true 仅用于小数据量本地/临时调试；生产环境应始终通过 Queue 执行。
   const result = await runPipeline(env, parseTargetDate(targetDateStr), run.run_id);
-  return jsonResponse({ ok: true, queued: false, mode: 'manual', result, run });
+  return jsonResponse({ ok: true, queued: false, mode: 'manual-sync-debug', result, run });
 }
 
 export default {
@@ -1188,6 +1579,7 @@ export default {
         const run = await storage.createPipelineRun(targetDate, 'scheduled');
         const message: RunMessage = {
           type: 'run',
+          phase: 'sniff',
           runId: run.run_id,
           targetDate,
           requestedAt: new Date().toISOString(),
@@ -1199,8 +1591,16 @@ export default {
           return;
         }
 
-        console.warn('PAPER_ANALYSIS_QUEUE 未绑定，scheduled 将直接执行 Pipeline');
-        await runPipeline(env, parseTargetDate(targetDate), run.run_id);
+        console.error('PAPER_ANALYSIS_QUEUE 未绑定；为避免单次 scheduled invocation 内执行完整 Pipeline 导致 subrequests 超限，已跳过本次运行');
+        await storage.createProgressSink(run.run_id).update({
+          targetDate,
+          status: 'failed',
+          progress: 0,
+          step: '未配置队列',
+          message: 'PAPER_ANALYSIS_QUEUE 未绑定，定时任务已跳过；请绑定 Queue 后再运行',
+          level: 'error',
+          error: 'PAPER_ANALYSIS_QUEUE 未绑定',
+        });
       })(),
     );
   },
@@ -1212,12 +1612,20 @@ export default {
       let runId = message.body.runId;
       try {
         const targetDate = parseTargetDate(message.body.targetDate);
+        const targetDateRaw = message.body.targetDate || formatDate(targetDate) || todayBeijing();
         if (!runId) {
           const storage = new WorkerD1Storage(env.PAPER_DB);
-          const run = await storage.createPipelineRun(formatDate(targetDate) || todayBeijing(), message.body.source);
+          const run = await storage.createPipelineRun(targetDateRaw, message.body.source);
           runId = run.run_id;
         }
-        await runPipeline(env, targetDate, runId);
+
+        const phase = message.body.phase || 'sniff';
+        if (phase === 'sniff') {
+          await runSniffStage(env, targetDate, targetDateRaw, runId, message.body.source);
+        } else {
+          await runAnalyzeStage(env, targetDateRaw, runId, message.body.source);
+        }
+
         message.ack();
       } catch (error) {
         if (runId) {

@@ -20,6 +20,7 @@ const DEFAULT_CONNECTIONS = 3;
 const DEFAULT_REQUEST_INTERVAL = 0.5;
 
 type ChatMessage = Array<{ role: string; content: string }>;
+type BatchProgressCallback = (completed: number, total: number) => void | Promise<void>;
 
 // 发送给 /chat/completions 的请求体。
 // 这里只定义项目实际用到的字段，便于在没有 SDK 的情况下保持类型提示。
@@ -127,80 +128,52 @@ export class LlmClient {
   }
 
   // 批量调用大模型。
-  // 它把 N 个请求按 connections 分成几个队列，每个队列内部串行，队列之间并行。
-  // 这样可以控制并发量，避免把模型服务商打到限流。
+  // Cloudflare Workers 会统计单次 invocation 内的所有外部 fetch/D1 等 subrequests。
+  // 这里按固定窗口并发处理：每轮最多 5 个请求同时发出，本轮全部完成后才进入下一轮。
   async batchAchat(
     messagesList: ChatMessage[],
     temperature: number = DEFAULT_TEMPERATURE,
     jsonMode: boolean = true,
     requestInterval: number = DEFAULT_REQUEST_INTERVAL,
-    queueInterval: number = 20.0,
+    _queueInterval: number = 20.0,
+    onProgress?: BatchProgressCallback,
   ): Promise<LlmResponse[]> {
     const totalCount = messagesList.length;
-    const queueSize = this.connections >= 1 ? this.connections : DEFAULT_CONNECTIONS;
-    const queues: Array<{ index: number; messages: ChatMessage[] }> = [];
-
-    for (let i = 0; i < queueSize; i++) {
-      // 例：queueSize=3 时，第 0 个队列处理 0,3,6...；第 1 个处理 1,4,7...
-      const queue = messagesList.filter((_, index) => index % queueSize === i);
-      if (queue.length > 0) {
-        queues.push({ index: i, messages: queue });
-      }
-    }
-
-    console.info(`开始多队列并行处理 ${totalCount} 个请求`);
-    console.info(
-      `队列数: ${queues.length}, 并发宽度: ${queueSize}, 队列间隔: ${queueInterval} 秒, 请求间隔: ${requestInterval} 秒`,
-    );
-
     const results = new Array<LlmResponse>(totalCount);
+    const concurrency = 5;
     let completedCount = 0;
 
-    const processQueue = async (queueIndex: number, queueMessages: ChatMessage[]) => {
-      const queueTotal = queueMessages.length;
+    console.info(`开始窗口并发处理 ${totalCount} 个请求，并发宽度: ${concurrency}，轮次间隔: ${requestInterval} 秒`);
 
-      for (let j = 0; j < queueTotal; j++) {
-        // originalIndex 用来把结果放回原始位置，保证返回数组顺序和输入数组一致。
-        const originalIndex = queueIndex + j * queueSize;
-        const messages = queueMessages[j];
-        const requestId = `Q${queueIndex + 1}-${j + 1}/${queueTotal}`;
+    for (let start = 0; start < totalCount; start += concurrency) {
+      const windowMessages = messagesList.slice(start, start + concurrency);
+      const windowNumber = Math.floor(start / concurrency) + 1;
+      console.info(`启动第 ${windowNumber} 轮请求，共 ${windowMessages.length} 个`);
 
-        try {
-          const result = await this.achat(messages, temperature, jsonMode, requestId);
-          results[originalIndex] = result;
-
-          completedCount++;
-          const progress = (completedCount / totalCount) * 100;
-          console.info(`请求 ${requestId} 完成，进度 ${progress.toFixed(1)}% (${completedCount}/${totalCount})`);
-        } catch (error) {
-          console.error(`请求 ${requestId} 异常: ${(error as Error).message}`);
-          results[originalIndex] = {
-            model: this.model,
-            data: null,
-            error: `请求异常: ${(error as Error).message}`,
-            elapsed: 0,
-          };
+      const windowResults = await Promise.all(windowMessages.map(async (messages, offset) => {
+        const index = start + offset;
+        const requestId = `${index + 1}/${totalCount}`;
+        const result = await this.achat(messages, temperature, jsonMode, requestId);
+        if (result.error) {
+          throw new Error(result.error);
         }
+        return { index, result };
+      }));
 
-        if (j < queueTotal - 1) {
-          await this.sleep(requestInterval);
-        }
+      for (const { index, result } of windowResults) {
+        results[index] = result;
+        completedCount++;
+        const progress = (completedCount / totalCount) * 100;
+        console.info(`请求 ${index + 1}/${totalCount} 完成，进度 ${progress.toFixed(1)}% (${completedCount}/${totalCount})`);
+        await onProgress?.(completedCount, totalCount);
       }
-    };
 
-    const queueTasks: Promise<void>[] = [];
-    for (let i = 0; i < queues.length; i++) {
-      const { index, messages } = queues[i];
-      console.info(`启动队列 #${i + 1}/${queues.length}`);
-      queueTasks.push(processQueue(index, messages));
-
-      if (i < queues.length - 1) {
-        await this.sleep(queueInterval);
+      if (start + concurrency < totalCount) {
+        await this.sleep(requestInterval);
       }
     }
 
-    await Promise.all(queueTasks);
-    console.info(`批量调用完成，共 ${completedCount}/${totalCount} 个请求成功`);
+    console.info(`窗口并发批量调用完成，共 ${completedCount}/${totalCount} 个请求完成`);
     return results;
   }
 

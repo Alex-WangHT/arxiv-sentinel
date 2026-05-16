@@ -5,6 +5,7 @@ import { ArxivSniffer } from './arxiv_sniffer';
 import { AnalysisResult, Paper, PipelineResult, PaperSniffer } from './models';
 
 const BEIJING_TIME_OFFSET_MS = 8 * 60 * 60 * 1000;
+const MAX_PAPERS_PER_WORKER_INVOCATION = 5;
 
 export type PipelineRunStatus = 'queued' | 'running' | 'completed' | 'failed';
 export type PipelineLogLevel = 'info' | 'warn' | 'error';
@@ -100,7 +101,7 @@ export class MemoryPipelineStorage implements PipelineStorage {
   }
 
   async saveHistory(_historyKey: string, ids: string[], _config: Config): Promise<void> {
-    this.history = [...ids];
+    this.history = [...new Set([...this.history, ...ids])];
   }
 
   async listAnalysisResults(query: AnalysisResultsQuery): Promise<AnalysisResultRecord[]> {
@@ -224,7 +225,10 @@ export class Pipeline {
   // 第二步：把论文交给大模型分析。
   // keywords 现在表示“重点关注关键词”，用于评估和前端重点推送排序，
   // 不再作为后端丢弃论文的过滤条件。
-  async analyzePapers(papers: Paper[]): Promise<AnalysisResult[]> {
+  async analyzePapers(
+    papers: Paper[],
+    progress?: (completed: number, total: number) => Promise<void>,
+  ): Promise<AnalysisResult[]> {
     if (papers.length === 0) {
       console.info('没有论文需要分析');
       return [];
@@ -236,6 +240,7 @@ export class Pipeline {
       papers,
       3,
       10,
+      progress,
     );
 
     return results;
@@ -253,11 +258,12 @@ export class Pipeline {
   // 第四步：把这次处理过的论文 id 写入历史。
   // 下次运行时会跳过这些 id，避免重复分析和重复花费模型调用成本。
   async updateHistory(papers: Paper[]): Promise<void> {
-    const newIds = papers.map(paper => paper.id);
-    const updatedIds = [...new Set([...this.config.processed_ids, ...newIds])];
+    const newIds = [...new Set(papers.map(paper => paper.id))];
 
-    await this.storage.saveHistory(this.config.history_file, updatedIds, this.config);
-    this.config.processed_ids = updatedIds;
+    // 只持久化本次新增的论文 ID，避免每次运行都把全部历史重新写入 D1，
+    // 否则历史数据一多会在单次 Worker invocation 内制造大量 subrequests。
+    await this.storage.saveHistory(this.config.history_file, newIds, this.config);
+    this.config.processed_ids = [...new Set([...this.config.processed_ids, ...newIds])];
     console.info(`历史记录已更新，新增 ${newIds.length} 条记录`);
   }
 
@@ -329,16 +335,39 @@ export class Pipeline {
         };
       }
 
+      const papersForThisRun = papers.slice(0, MAX_PAPERS_PER_WORKER_INVOCATION);
+      const deferredCount = papers.length - papersForThisRun.length;
+      if (deferredCount > 0) {
+        console.warn(
+          `本次 Worker invocation 只处理前 ${papersForThisRun.length} 篇论文，剩余 ${deferredCount} 篇留到后续运行，避免 subrequests 超限`,
+        );
+      }
+
       console.info('步骤 2: 开始分析论文摘要');
       await this.reportProgress({
         targetDate: targetDateStr,
         status: 'running',
         progress: 45,
         step: '分析论文',
-        message: `正在调用模型分析 ${papers.length} 篇论文`,
+        message: deferredCount > 0
+          ? `正在调用模型分析前 ${papersForThisRun.length} 篇论文，剩余 ${deferredCount} 篇留到后续运行`
+          : `正在调用模型分析 ${papersForThisRun.length} 篇论文`,
         totalFetched,
       });
-      const analyzedResults = await this.analyzePapers(papers);
+      const analyzedResults = await this.analyzePapers(
+        papersForThisRun,
+        async (completed, batchTotal) => {
+          await this.reportProgress({
+            targetDate: targetDateStr,
+            status: 'running',
+            progress: 45 + Math.round((completed / Math.max(1, batchTotal)) * 30),
+            step: '分析论文',
+            message: `当前队列批次正在分析论文，已完成 ${completed}/${batchTotal} 篇`,
+            totalFetched,
+            totalAnalyzed: completed,
+          });
+        },
+      );
       const totalAnalyzed = analyzedResults.length;
       console.info(`步骤 2 完成: 已分析 ${totalAnalyzed} 篇，未按重点关注词丢弃论文`);
       await this.reportProgress({
@@ -373,18 +402,22 @@ export class Pipeline {
         totalFetched,
         totalAnalyzed,
       });
-      await this.updateHistory(papers);
+      await this.updateHistory(papersForThisRun);
+
+      const hasDeferredPapers = deferredCount > 0;
 
       console.info('='.repeat(60));
-      console.info('流水线执行完成');
+      console.info(hasDeferredPapers ? '本批次执行完成，等待队列续跑' : '流水线执行完成');
       console.info('='.repeat(60));
 
       await this.reportProgress({
         targetDate: targetDateStr,
-        status: 'completed',
-        progress: 100,
-        step: '完成',
-        message: `流水线已完成，共分析 ${totalAnalyzed} 篇论文`,
+        status: hasDeferredPapers ? 'running' : 'completed',
+        progress: hasDeferredPapers ? 95 : 100,
+        step: hasDeferredPapers ? '批次完成' : '完成',
+        message: hasDeferredPapers
+          ? `本批次已分析 ${totalAnalyzed} 篇论文，剩余 ${deferredCount} 篇将进入队列等待下一次 Worker invocation`
+          : `流水线已完成，共分析 ${totalAnalyzed} 篇论文`,
         totalFetched,
         totalAnalyzed,
       });
