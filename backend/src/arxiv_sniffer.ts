@@ -17,6 +17,7 @@ const ARXIV_MIN_REQUEST_INTERVAL_MS = 3500;
 const ARXIV_MAX_RETRIES = 3;
 const ARXIV_RETRY_BASE_MS = 5000;
 const ARXIV_MAX_RETRY_DELAY_MS = 60000;
+const BEIJING_TIME_OFFSET_MS = 8 * 60 * 60 * 1000;
 
 let arxivRequestQueue: Promise<void> = Promise.resolve();
 let lastArxivRequestAt = 0;
@@ -57,38 +58,40 @@ async function waitForArxivSlot(): Promise<void> {
 }
 
 export class ArxivSniffer implements PaperSniffer {
-  readonly name = 'arXiv';
+  readonly name: string;
   private domainRules: DomainRule[];
   private maxResults: number;
-  private targetDate: Date;
-  private targetStr: string;
+  private sourceId: string;
+  private targetDate!: Date;
+  private targetStr!: string;
 
   constructor(
     domainRules: DomainRule[],
     maxResults: number,
     targetDate?: Date,
+    sourceId = 'arxiv',
+    sourceName = 'arXiv',
   ) {
+    this.name = sourceName;
     this.domainRules = domainRules;
     this.maxResults = maxResults;
+    this.sourceId = sourceId;
+    this.setTargetDate(targetDate);
+  }
 
-    // arXiv 的最新数据常常会有发布时间和索引延迟。
-    // 默认抓“两天前”的论文，可以减少今天/昨天数据不完整导致的误判。
-    const today = new Date();
-    const twoDaysAgo = new Date(today);
-    twoDaysAgo.setUTCDate(twoDaysAgo.getUTCDate() - 2);
-
-    if (targetDate) {
-      this.targetDate = new Date(Math.min(targetDate.getTime(), twoDaysAgo.getTime()));
-    } else {
-      this.targetDate = twoDaysAgo;
-    }
+  private setTargetDate(targetDate?: Date): void {
+    // 默认抓取北京时间当日论文；如果前端指定日期，则按指定日期查询。
+    this.targetDate = targetDate ? new Date(targetDate) : new Date(Date.now() + BEIJING_TIME_OFFSET_MS);
 
     this.targetStr = this.formatDate(this.targetDate);
   }
 
   // 主入口：按配置里的每个分类分别抓取，再合并、去重。
-  async sniff(): Promise<Paper[]> {
-    console.info(`开始嗅探 arXiv，目标日期: ${this.targetStr}`);
+  async sniff(targetDate?: Date): Promise<Paper[]> {
+    if (targetDate) {
+      this.setTargetDate(targetDate);
+    }
+    console.info(`开始嗅探 ${this.name}，目标日期: ${this.targetStr}`);
 
     const results: CategoryFetchResult[] = [];
     for (const rule of this.domainRules) {
@@ -277,7 +280,7 @@ export class ArxivSniffer implements PaperSniffer {
         // 把 arXiv XML 条目转换成项目内部统一使用的 Paper 对象。
         const paper: Paper = {
           id: this.normalizeArxivId(id),
-          source: 'arxiv',
+          source: this.sourceId,
           title: this.normalizeText(title),
           abstract: this.normalizeText(summary),
           authors: this.extractAuthors(entryXml),

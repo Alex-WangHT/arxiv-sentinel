@@ -225,8 +225,17 @@ wait_for_analysis_results() {
 
 VALID_CONFIG_BODY='{
   "keywords": ["large language model", "agent", "reasoning"],
+  "sources": [
+    {
+      "id": "arxiv",
+      "type": "arxiv",
+      "name": "arXiv",
+      "enabled": true
+    }
+  ],
   "domain_rules": [
     {
+      "source": "arxiv",
       "category": "cs.RO",
       "mode": "accept_all",
       "filter_categories": []

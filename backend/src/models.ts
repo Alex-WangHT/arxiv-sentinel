@@ -1,4 +1,14 @@
+export type PaperSourceType = "arxiv" | "custom";
+
+export interface PaperSource {
+  id: string;
+  type: PaperSourceType;
+  name: string;
+  enabled: boolean;
+}
+
 export interface DomainRule {
+  source: string;
   category: string;
   mode: "accept_all" | "categories_filter";
   filter_categories: string[];
@@ -48,6 +58,8 @@ export interface LlmResponse {
 export interface PipelineResult {
   date: string;
   total_fetched: number;
+  total_analyzed: number;
+  /** Backward-compatible alias for older clients. It now equals total_analyzed. */
   total_filtered: number;
   results: AnalysisResult[];
 }
