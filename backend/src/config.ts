@@ -323,9 +323,9 @@ export class Config {
     if (
       !Number.isInteger(cfg.max_concurrent_requests)
       || cfg.max_concurrent_requests < 1
-      || cfg.max_concurrent_requests > 50
+      || cfg.max_concurrent_requests > 500
     ) {
-      errors.push('max_concurrent_requests: 必须为 1-50 之间的整数');
+      errors.push('max_concurrent_requests: 必须为 1-500 之间的整数');
     }
 
     if (typeof cfg.openai_api_key !== 'string' || !cfg.openai_api_key.trim()) {

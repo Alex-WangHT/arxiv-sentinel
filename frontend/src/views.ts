@@ -196,7 +196,6 @@ function renderDashboardToolbar(filters: UiFilters, refreshState?: DashboardRefr
     : '';
 
   return `<form class="toolbar" method="get" action="/">
-    <input type="hidden" name="ensure" value="1">
     ${runningFields}
     <input type="hidden" name="view" value="${escapeAttr(filters.view)}">
     <label>
@@ -215,9 +214,8 @@ function renderDashboardToolbar(filters: UiFilters, refreshState?: DashboardRefr
       <span>结果关键词</span>
       <input name="keyword" value="${escapeAttr(filters.keyword)}" placeholder="agent">
     </label>
-    <button type="submit">刷新</button>
-    <a class="button secondary" href="${exportMd}">导出 Markdown</a>
-    <a class="button secondary" href="${exportJson}">导出 JSON</a>
+    <button type="submit">查询</button>
+    <button type="submit" name="ensure" value="1">刷新</button>
   </form>`;
 }
 
@@ -617,7 +615,7 @@ function renderConfigForm(config: EditableConfig): string {
     </label>
     <label>
       <span>最大并发请求</span>
-      <input type="number" min="1" max="50" name="max_concurrent_requests" value="${escapeAttr(configText(config, 'max_concurrent_requests'))}">
+      <input type="number" min="1" max="500" name="max_concurrent_requests" value="${escapeAttr(configText(config, 'max_concurrent_requests'))}">
     </label>
     <label>
       <span>日志等级</span>

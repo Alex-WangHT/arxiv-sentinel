@@ -350,8 +350,41 @@ async function handleDashboard(
     const latestRun = (refresh.ensure || refresh.running)
       ? (await client.runStatus(filters.date).catch(() => undefined))?.run || undefined
       : undefined;
+    const isActiveRun = latestRun && (latestRun.status === 'queued' || latestRun.status === 'running');
+    const hideResults = refresh.ensure || refresh.running;
+    const displayResults = hideResults ? [] : results;
+    const displayTotalCount = hideResults ? 0 : allResults.length;
+    const displayFocusTotal = hideResults ? 0 : focusTotal;
+    const displaySelected = hideResults ? undefined : selected;
+    const displayKeywordFacets = hideResults ? [] : keywordFacets;
 
-    if ((refresh.ensure || refresh.running) && allResults.length === 0) {
+    const shouldStartRun = refresh.ensure && !refresh.running && !isActiveRun;
+    if (shouldStartRun) {
+      const runTask = client.run({ date: filters.date, sync: false })
+        .catch(error => {
+          console.error(`刷新触发流水线失败: ${errorMessage(error)}`);
+        });
+
+      if (ctx) {
+        ctx.waitUntil(runTask);
+      } else {
+        void runTask;
+      }
+
+      const nextAttempt = refresh.attempt + 1;
+      refreshState = {
+        kind: 'queued',
+        date: filters.date,
+        attempt: nextAttempt,
+        progress: 0,
+        currentStep: '排队',
+        nextUrl: dashboardPath(filters, { running: '1', attempt: nextAttempt }),
+        message: allResults.length > 0
+          ? `${filters.date} 已从数据库加载旧结果，正在后台重新查询 arXiv。`
+          : `${filters.date} 暂无入库论文，已启动抓取和分析流水线。`,
+      };
+      status = 202;
+    } else if ((refresh.ensure || refresh.running) && allResults.length === 0) {
       if (latestRun) {
         refreshState = refreshStateFromRun(filters, latestRun, refresh.attempt, allResults.length);
         status = latestRun.status === 'failed' ? 502 : latestRun.status === 'completed' ? 200 : 202;
@@ -370,34 +403,9 @@ async function handleDashboard(
             : `${filters.date} 暂无入库论文，已启动抓取和分析流水线。`,
         };
       }
-
-      if (!refresh.running && !latestRun) {
-        const runTask = client.run({ date: filters.date, sync: false })
-          .catch(error => {
-            console.error(`刷新触发流水线失败: ${errorMessage(error)}`);
-          });
-
-        if (ctx) {
-          ctx.waitUntil(runTask);
-        } else {
-          void runTask;
-        }
-      }
-    } else if (refresh.running && allResults.length > 0) {
-      refreshState = latestRun
-        ? refreshStateFromRun(filters, {
-          ...latestRun,
-          status: latestRun.status === 'failed' ? 'failed' : 'completed',
-          progress: latestRun.status === 'failed' ? latestRun.progress : 100,
-        }, refresh.attempt, allResults.length)
-        : {
-          kind: 'completed',
-          date: filters.date,
-          attempt: refresh.attempt,
-          progress: 100,
-          currentStep: '完成',
-          message: `${filters.date} 的流水线已完成，已从数据库读取 ${allResults.length} 篇论文。`,
-        };
+    } else if (isActiveRun) {
+      refreshState = refreshStateFromRun(filters, latestRun!, refresh.attempt, allResults.length);
+      status = latestRun!.status === 'failed' ? 502 : latestRun!.status === 'completed' ? 200 : 202;
     } else if (refresh.ensure && allResults.length > 0) {
       refreshState = {
         kind: 'completed',
@@ -412,11 +420,11 @@ async function handleDashboard(
 
     return htmlResponse(renderDashboardPage({
       filters,
-      results,
-      totalCount: allResults.length,
-      focusTotal,
-      selected,
-      keywordFacets,
+      results: displayResults,
+      totalCount: displayTotalCount,
+      focusTotal: displayFocusTotal,
+      selected: displaySelected,
+      keywordFacets: displayKeywordFacets,
       runResponse: options.runResponse,
       refreshState,
       flash,
