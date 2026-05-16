@@ -9,13 +9,23 @@ import {
 
 const DEFAULT_CONFIG: Record<string, unknown> = {
   keywords: ['large language model', 'agent', 'reasoning'],
+  sources: [
+    {
+      id: 'arxiv',
+      type: 'arxiv',
+      name: 'arXiv',
+      enabled: true,
+    },
+  ],
   domain_rules: [
     {
+      source: 'arxiv',
       category: 'cs.RO',
       mode: 'accept_all',
       filter_categories: [],
     },
     {
+      source: 'arxiv',
       category: 'cs.CV',
       mode: 'categories_filter',
       filter_categories: ['cs.AI', 'cs.CL', 'cs.RO', 'cs.LG'],
@@ -337,6 +347,9 @@ function envConfigObject(env: Env): Record<string, unknown> {
 
   if (env.KEYWORDS !== undefined) {
     config.keywords = env.KEYWORDS;
+  }
+  if (env.SOURCES !== undefined) {
+    config.sources = JSON.parse(env.SOURCES) as unknown;
   }
   if (env.DOMAIN_RULES !== undefined) {
     config.domain_rules = JSON.parse(env.DOMAIN_RULES) as unknown;

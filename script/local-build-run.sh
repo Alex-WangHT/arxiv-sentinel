@@ -224,7 +224,7 @@ wait_for_frontend() {
         --max-time 5 \
         --output /dev/null \
         --write-out "%{http_code}" \
-        "$FRONTEND_BASE_URL/status" \
+        "$FRONTEND_BASE_URL/config" \
         2>/dev/null || true
     )"
 
@@ -291,7 +291,8 @@ run_light_smoke_tests() {
     --header "Authorization: Bearer $ADMIN_TOKEN" \
     "$BACKEND_BASE_URL/api/config"
 
-  assert_http "frontend status page" "200" "$FRONTEND_BASE_URL/status"
+  assert_http "frontend settings page" "200" "$FRONTEND_BASE_URL/config"
+  assert_http "frontend status redirect" "303" "$FRONTEND_BASE_URL/status"
   assert_http "frontend dashboard page" "200" "$FRONTEND_BASE_URL/"
   assert_http "frontend API proxy health" "200" "$FRONTEND_BASE_URL/api/health"
 }

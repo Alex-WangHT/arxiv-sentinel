@@ -1,7 +1,17 @@
 export type Score = 'HIGH' | 'MEDIUM' | 'LOW' | 'IRRELEVANT';
 export type ConfigSource = 'kv' | 'env' | 'default';
 
+export type PaperSourceType = 'arxiv' | 'custom';
+
+export interface PaperSourceConfig {
+  id: string;
+  type: PaperSourceType;
+  name: string;
+  enabled: boolean;
+}
+
 export interface DomainRule {
+  source?: string;
   category: string;
   mode: 'accept_all' | 'categories_filter';
   filter_categories: string[];
@@ -9,6 +19,7 @@ export interface DomainRule {
 
 export interface EditableConfig {
   keywords: string[];
+  sources?: PaperSourceConfig[];
   domain_rules: DomainRule[];
   relevance_threshold: Score;
   openai_model: string;
@@ -67,6 +78,7 @@ export interface AnalysisResultsResponse {
 export interface PipelineRunResult {
   date: string;
   total_fetched: number;
+  total_analyzed?: number;
   total_filtered: number;
   results: Array<{
     paper: {
@@ -105,9 +117,9 @@ export interface UiFilters {
   date: string;
   q: string;
   score: string;
-  category: string;
   keyword: string;
   selected: string;
+  view: 'focus' | 'all';
 }
 
 export interface Flash {

@@ -22,6 +22,7 @@
     "deploy:cloud": "bash backend/script/deploy.sh cloud",
     "deploy:frontend:local": "bash frontend/script/deploy.sh local",
     "deploy:frontend:cloud": "bash frontend/script/deploy.sh cloud",
+    "deploy:workers": "bash script/deploy-workers.sh",
     "local:build-run": "powershell -ExecutionPolicy Bypass -File script/local-build-run.ps1",
     "local:build-run:bash": "bash script/local-build-run.sh",
     "test:all": "bash backend/script/test.sh local",

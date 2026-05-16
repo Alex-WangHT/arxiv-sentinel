@@ -2,18 +2,20 @@ import { BackendClient, BackendClientEnv } from './backend_client';
 import {
   AnalysisResultRecord,
   BackendApiError,
+  ConfigResponse,
   EditableConfig,
   Flash,
+  HealthResponse,
+  RunResponse,
   Score,
   UiFilters,
 } from './models';
 import {
+  DashboardRefreshState,
   escapeHtml,
   renderConfigPage,
   renderDashboardPage,
   renderErrorPage,
-  renderRunPage,
-  renderStatusPage,
   todayUtc,
 } from './views';
 
@@ -28,6 +30,12 @@ const SCORE_TEXT: Record<Score, string> = {
   MEDIUM: '中',
   LOW: '低',
   IRRELEVANT: '无关',
+};
+const SCORE_PRIORITY: Record<Score, number> = {
+  HIGH: 3,
+  MEDIUM: 2,
+  LOW: 1,
+  IRRELEVANT: 0,
 };
 
 function jsonResponse(data: unknown, init: ResponseInit = {}): Response {
@@ -78,10 +86,40 @@ function parseFilters(request: Request): UiFilters {
     date: VALID_DATE.test(date) ? date : todayUtc(),
     q: url.searchParams.get('q')?.trim() || '',
     score: url.searchParams.get('score')?.trim().toUpperCase() || '',
-    category: url.searchParams.get('category')?.trim() || '',
     keyword: url.searchParams.get('keyword')?.trim() || '',
     selected: url.searchParams.get('selected')?.trim() || '',
+    view: url.searchParams.get('view') === 'all' ? 'all' : 'focus',
   };
+}
+
+function parseRefreshRequest(request: Request): { ensure: boolean; running: boolean; attempt: number } {
+  const url = new URL(request.url);
+  const attempt = Number(url.searchParams.get('attempt') || '0');
+
+  return {
+    ensure: url.searchParams.get('ensure') === '1',
+    running: url.searchParams.get('running') === '1',
+    attempt: Number.isInteger(attempt) && attempt > 0 ? Math.min(attempt, 999) : 0,
+  };
+}
+
+function dashboardPath(filters: UiFilters, extras: Record<string, string | number | undefined> = {}): string {
+  const params = new URLSearchParams();
+  for (const key of ['date', 'q', 'score', 'keyword', 'selected', 'view'] as const) {
+    const value = filters[key];
+    if (value) {
+      params.set(key, value);
+    }
+  }
+
+  for (const [key, value] of Object.entries(extras)) {
+    if (value !== undefined && value !== '') {
+      params.set(key, String(value));
+    }
+  }
+
+  const query = params.toString();
+  return query ? `/?${query}` : '/';
 }
 
 function searchableText(result: AnalysisResultRecord): string {
@@ -97,20 +135,21 @@ function searchableText(result: AnalysisResultRecord): string {
   ].join(' ').toLowerCase();
 }
 
-function filterResults(results: AnalysisResultRecord[], filters: UiFilters): AnalysisResultRecord[] {
+function filterResults(
+  results: AnalysisResultRecord[],
+  filters: UiFilters,
+  options: { includeKeyword?: boolean } = {},
+): AnalysisResultRecord[] {
   const q = filters.q.toLowerCase();
-  const category = filters.category.toLowerCase();
   const keyword = filters.keyword.toLowerCase();
   const score = filters.score.toUpperCase();
+  const includeKeyword = options.includeKeyword ?? true;
 
   return results.filter(result => {
     if (score && result.score !== score) {
       return false;
     }
-    if (category && !result.categories.some(value => value.toLowerCase().includes(category))) {
-      return false;
-    }
-    if (keyword && !result.keywords.some(value => value.toLowerCase().includes(keyword))) {
+    if (includeKeyword && keyword && !result.keywords.some(value => value.toLowerCase().includes(keyword))) {
       return false;
     }
     if (q && !searchableText(result).includes(q)) {
@@ -118,6 +157,42 @@ function filterResults(results: AnalysisResultRecord[], filters: UiFilters): Ana
     }
     return true;
   });
+}
+
+function focusThreshold(config: ConfigResponse | undefined): Score {
+  const value = config?.effective_config.relevance_threshold;
+  return value && SCORE_VALUES.includes(value) ? value : 'MEDIUM';
+}
+
+function isFocusResult(result: AnalysisResultRecord, threshold: Score): boolean {
+  return SCORE_PRIORITY[result.score] >= SCORE_PRIORITY[threshold];
+}
+
+function keywordFacets(results: AnalysisResultRecord[]): Array<{ value: string; count: number }> {
+  const counts = new Map<string, { value: string; count: number }>();
+
+  for (const result of results) {
+    const seen = new Set<string>();
+    for (const keyword of result.keywords) {
+      const value = keyword.trim();
+      const key = value.toLowerCase();
+      if (!value || seen.has(key)) {
+        continue;
+      }
+
+      seen.add(key);
+      const current = counts.get(key);
+      if (current) {
+        current.count += 1;
+      } else {
+        counts.set(key, { value, count: 1 });
+      }
+    }
+  }
+
+  return [...counts.values()]
+    .sort((left, right) => right.count - left.count || left.value.localeCompare(right.value))
+    .slice(0, 24);
 }
 
 function pickSelected(results: AnalysisResultRecord[], selectedId: string): AnalysisResultRecord | undefined {
@@ -156,48 +231,170 @@ function renderMarkdown(date: string, results: AnalysisResultRecord[]): string {
 }
 
 async function loadFilteredResults(
-  request: Request,
+  filters: UiFilters,
   client: BackendClient,
+  config: ConfigResponse | undefined,
 ): Promise<{
   filters: UiFilters;
   allResults: AnalysisResultRecord[];
   results: AnalysisResultRecord[];
+  focusTotal: number;
   selected?: AnalysisResultRecord;
+  keywordFacets: Array<{ value: string; count: number }>;
 }> {
-  const filters = parseFilters(request);
   const response = await client.analysisResults(filters.date);
-  const results = filterResults(response.results, filters);
+  const threshold = focusThreshold(config);
+  const focusResults = response.results.filter(result => isFocusResult(result, threshold));
+  const viewSource = filters.view === 'focus' ? focusResults : response.results;
+  const relatedResults = filterResults(viewSource, filters, { includeKeyword: false });
+  const results = filterResults(viewSource, filters);
 
   return {
     filters,
     allResults: response.results,
     results,
+    focusTotal: focusResults.length,
     selected: pickSelected(results, filters.selected),
+    keywordFacets: keywordFacets(relatedResults),
   };
 }
 
-async function handleDashboard(request: Request, env: Env): Promise<Response> {
-  const client = new BackendClient(env);
+async function loadStatusSummary(client: BackendClient, env: Env): Promise<{
+  health?: HealthResponse;
+  config?: ConfigResponse;
+  backendBaseUrl?: string;
+  errors: string[];
+}> {
+  const errors: string[] = [];
+  let health;
+  let config;
 
   try {
-    const { filters, allResults, results, selected } = await loadFilteredResults(request, client);
+    health = await client.health();
+  } catch (error) {
+    errors.push(`健康检查失败：${errorMessage(error)}`);
+  }
+
+  try {
+    config = await client.config();
+  } catch (error) {
+    errors.push(`读取配置失败：${errorMessage(error)}`);
+  }
+
+  return {
+    health,
+    config,
+    backendBaseUrl: env.BACKEND_BASE_URL,
+    errors,
+  };
+}
+
+async function handleDashboard(
+  request: Request,
+  env: Env,
+  ctx?: ExecutionContext,
+  options: {
+    dateOverride?: string;
+    runResponse?: RunResponse;
+    flash?: Flash;
+    status?: number;
+  } = {},
+): Promise<Response> {
+  const client = new BackendClient(env);
+  const filters = parseFilters(request);
+  const refresh = parseRefreshRequest(request);
+  if (options.dateOverride && VALID_DATE.test(options.dateOverride)) {
+    filters.date = options.dateOverride;
+    filters.selected = '';
+  }
+
+  const statusSummary = await loadStatusSummary(client, env);
+  let status = options.status || 200;
+  let flash = options.flash;
+  let refreshState: DashboardRefreshState | undefined;
+
+  try {
+    const { allResults, results, focusTotal, selected, keywordFacets } = await loadFilteredResults(
+      filters,
+      client,
+      statusSummary.config,
+    );
+
+    if ((refresh.ensure || refresh.running) && allResults.length === 0) {
+      status = refresh.running ? 200 : 202;
+      const nextAttempt = refresh.attempt + 1;
+      refreshState = {
+        kind: 'running',
+        date: filters.date,
+        attempt: nextAttempt,
+        nextUrl: dashboardPath(filters, { running: '1', attempt: nextAttempt }),
+        message: refresh.running
+          ? `${filters.date} 的流水线仍在运行，暂未查询到入库论文。`
+          : `${filters.date} 暂无入库论文，已启动抓取和分析流水线。`,
+      };
+
+      if (!refresh.running) {
+        const runTask = client.run({ date: filters.date, sync: false })
+          .catch(error => {
+            console.error(`刷新触发流水线失败: ${errorMessage(error)}`);
+          });
+
+        if (ctx) {
+          ctx.waitUntil(runTask);
+        } else {
+          void runTask;
+        }
+      }
+    } else if (refresh.running && allResults.length > 0) {
+      refreshState = {
+        kind: 'completed',
+        date: filters.date,
+        attempt: refresh.attempt,
+        message: `${filters.date} 的流水线已完成，已从数据库读取 ${allResults.length} 篇论文。`,
+      };
+    } else if (refresh.ensure && allResults.length > 0) {
+      refreshState = {
+        kind: 'completed',
+        date: filters.date,
+        attempt: 0,
+        message: `数据库中已有 ${filters.date} 的论文，共 ${allResults.length} 篇，已直接刷新。`,
+      };
+    }
+
     return htmlResponse(renderDashboardPage({
       filters,
       results,
       totalCount: allResults.length,
+      focusTotal,
       selected,
-    }));
+      keywordFacets,
+      runResponse: options.runResponse,
+      refreshState,
+      flash,
+    }), status);
   } catch (error) {
-    const filters = parseFilters(request);
+    flash = {
+      kind: 'error',
+      message: flash ? `${flash.message} ${errorMessage(error)}` : errorMessage(error),
+    };
+    status = status === 200 ? 502 : status;
     return htmlResponse(renderDashboardPage({
       filters,
       results: [],
       totalCount: 0,
-      flash: {
-        kind: 'error',
-        message: errorMessage(error),
-      },
-    }), 502);
+      focusTotal: 0,
+      keywordFacets: [],
+      runResponse: options.runResponse,
+      refreshState: (refresh.ensure || refresh.running)
+        ? {
+          kind: 'error',
+          date: filters.date,
+          attempt: refresh.attempt,
+          message: errorMessage(error),
+        }
+        : undefined,
+      flash,
+    }), status);
   }
 }
 
@@ -232,9 +429,32 @@ function splitList(value: string): string[] {
     .filter(Boolean);
 }
 
+function parseSourceForm(form: FormData): NonNullable<EditableConfig['sources']> {
+  const ids = form.getAll('source_id').map(value => String(value).trim());
+  const types = form.getAll('source_type').map(value => String(value).trim());
+  const names = form.getAll('source_name').map(value => String(value).trim());
+  const enabledValues = form.getAll('source_enabled').map(value => String(value).trim());
+
+  const sources = ids
+    .map((id, index) => ({
+      id,
+      type: types[index] === 'arxiv' ? 'arxiv' as const : 'custom' as const,
+      name: names[index] || id,
+      enabled: enabledValues[index] !== 'false',
+    }))
+    .filter(source => source.id);
+
+  return sources.length > 0
+    ? sources
+    : [{ id: 'arxiv', type: 'arxiv', name: 'arXiv', enabled: true }];
+}
+
 async function parseConfigForm(request: Request): Promise<EditableConfig> {
   const form = await request.formData();
   const keywords = formStrings(form, 'keyword');
+  const sources = parseSourceForm(form);
+  const fallbackSource = sources.find(source => source.enabled)?.id || sources[0]?.id || 'arxiv';
+  const domainSources = form.getAll('domain_source').map(value => String(value).trim());
   const domainCategories = form.getAll('domain_category').map(value => String(value).trim());
   const domainModes = form.getAll('domain_mode').map(value => String(value).trim());
   const domainFilters = form.getAll('domain_filter_categories').map(value => String(value).trim());
@@ -247,6 +467,7 @@ async function parseConfigForm(request: Request): Promise<EditableConfig> {
 
   const domainRules = domainCategories
     .map((category, index) => ({
+      source: domainSources[index] || fallbackSource,
       category,
       mode: domainModes[index] === 'categories_filter' ? 'categories_filter' : 'accept_all',
       filter_categories: splitList(domainFilters[index] || ''),
@@ -255,6 +476,7 @@ async function parseConfigForm(request: Request): Promise<EditableConfig> {
 
   return {
     keywords,
+    sources,
     domain_rules: domainRules,
     relevance_threshold: threshold,
     openai_model: String(form.get('openai_model') || '').trim(),
@@ -271,10 +493,16 @@ async function handleConfigGet(env: Env, flash?: Flash, status = 200): Promise<R
   const client = new BackendClient(env);
 
   try {
-    const response = await client.config();
+    const [response, statusSummary] = await Promise.all([
+      client.config(),
+      loadStatusSummary(client, env),
+    ]);
     return htmlResponse(renderConfigPage({
       response,
       config: response.config,
+      health: statusSummary.health,
+      backendBaseUrl: statusSummary.backendBaseUrl,
+      statusErrors: statusSummary.errors,
       flash,
     }), status);
   } catch (error) {
@@ -296,17 +524,25 @@ async function handleConfigPost(request: Request, env: Env, mode: 'validate' | '
     const response = mode === 'validate'
       ? await client.validateConfig(draft)
       : await client.saveConfig(draft);
+    const statusSummary = await loadStatusSummary(client, env);
     return htmlResponse(renderConfigPage({
       response,
       config: response.config,
+      health: statusSummary.health,
+      backendBaseUrl: statusSummary.backendBaseUrl,
+      statusErrors: statusSummary.errors,
       flash: {
         kind: 'success',
         message: mode === 'validate' ? '配置校验通过。' : '配置已保存到 KV。',
       },
     }));
   } catch (error) {
+    const statusSummary = await loadStatusSummary(client, env);
     return htmlResponse(renderConfigPage({
       config: draft,
+      health: statusSummary.health,
+      backendBaseUrl: statusSummary.backendBaseUrl,
+      statusErrors: statusSummary.errors,
       flash: {
         kind: 'error',
         message: errorMessage(error),
@@ -315,12 +551,13 @@ async function handleConfigPost(request: Request, env: Env, mode: 'validate' | '
   }
 }
 
-async function handleRunGet(request: Request, env: Env): Promise<Response> {
+async function handleRunGet(request: Request, _env: Env): Promise<Response> {
   const url = new URL(request.url);
   const date = url.searchParams.get('date') || todayUtc();
-  return htmlResponse(renderRunPage({
-    defaultDate: VALID_DATE.test(date) ? date : todayUtc(),
-  }));
+  const dashboardUrl = new URL('/', request.url);
+  dashboardUrl.searchParams.set('date', VALID_DATE.test(date) ? date : todayUtc());
+  dashboardUrl.searchParams.set('ensure', '1');
+  return Response.redirect(dashboardUrl, 303);
 }
 
 async function handleRunPost(request: Request, env: Env): Promise<Response> {
@@ -328,55 +565,40 @@ async function handleRunPost(request: Request, env: Env): Promise<Response> {
   const date = String(form.get('date') || '').trim();
   const sync = form.get('sync') === 'true';
   const client = new BackendClient(env);
+  const requestedDate = VALID_DATE.test(date) ? date : todayUtc();
 
   try {
     const response = await client.run({
       date: VALID_DATE.test(date) ? date : undefined,
       sync,
     });
-    return htmlResponse(renderRunPage({
-      defaultDate: VALID_DATE.test(date) ? date : todayUtc(),
-      response,
+    const responseDate = response.queued
+      ? VALID_DATE.test(response.targetDate) ? response.targetDate : requestedDate
+      : response.result.date;
+
+    return handleDashboard(request, env, undefined, {
+      dateOverride: responseDate,
+      runResponse: response,
       flash: {
         kind: 'success',
         message: response.queued ? '任务已加入队列。' : '任务已完成。',
       },
-    }), response.queued ? 202 : 200);
+      status: response.queued ? 202 : 200,
+    });
   } catch (error) {
-    return htmlResponse(renderRunPage({
-      defaultDate: VALID_DATE.test(date) ? date : todayUtc(),
+    return handleDashboard(request, env, undefined, {
+      dateOverride: requestedDate,
       flash: {
         kind: 'error',
         message: errorMessage(error),
       },
-    }), 502);
+      status: 502,
+    });
   }
 }
 
-async function handleStatus(env: Env): Promise<Response> {
-  const client = new BackendClient(env);
-  const errors: string[] = [];
-  let health;
-  let config;
-
-  try {
-    health = await client.health();
-  } catch (error) {
-    errors.push(`健康检查失败：${errorMessage(error)}`);
-  }
-
-  try {
-    config = await client.config();
-  } catch (error) {
-    errors.push(`读取配置失败：${errorMessage(error)}`);
-  }
-
-  return htmlResponse(renderStatusPage({
-    health,
-    config,
-    backendBaseUrl: env.BACKEND_BASE_URL,
-    errors,
-  }), errors.length > 0 ? 502 : 200);
+async function handleStatus(request: Request): Promise<Response> {
+  return Response.redirect(new URL('/config#status-panel', request.url), 303);
 }
 
 function mapApiPath(pathname: string): string {
@@ -405,7 +627,9 @@ async function handleApiProxy(request: Request, env: Env): Promise<Response> {
 
 async function handleExport(request: Request, env: Env, format: 'json' | 'markdown'): Promise<Response> {
   const client = new BackendClient(env);
-  const { filters, results } = await loadFilteredResults(request, client);
+  const filters = parseFilters(request);
+  const config = await client.config().catch(() => undefined);
+  const { results } = await loadFilteredResults(filters, client, config);
 
   if (format === 'json') {
     return jsonResponse({
@@ -426,7 +650,7 @@ function methodNotAllowed(): Response {
 }
 
 export default {
-  async fetch(request: Request, env: Env): Promise<Response> {
+  async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
 
     if (request.method === 'OPTIONS') {
@@ -442,7 +666,7 @@ export default {
         if (request.method !== 'GET') {
           return methodNotAllowed();
         }
-        return handleDashboard(request, env);
+        return handleDashboard(request, env, ctx);
       }
 
       if (url.pathname === '/config') {
@@ -480,7 +704,7 @@ export default {
         if (request.method !== 'GET') {
           return methodNotAllowed();
         }
-        return handleStatus(env);
+        return handleStatus(request);
       }
 
       if (url.pathname === '/export.json') {

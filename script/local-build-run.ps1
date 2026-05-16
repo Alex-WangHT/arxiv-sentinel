@@ -233,14 +233,38 @@ function Get-HttpStatus {
   param([string[]]$CurlArgs)
 
   $bodyFile = Join-Path $LogDir ("response-{0}.txt" -f ([Guid]::NewGuid().ToString("N")))
-  $status = & curl.exe `
-    --silent `
-    --show-error `
-    --connect-timeout 5 `
-    --max-time 30 `
-    --output $bodyFile `
-    --write-out "%{http_code}" `
-    @CurlArgs 2>$null
+  $status = ""
+  $previousErrorActionPreference = $ErrorActionPreference
+  $previousNativePreference = $null
+  $hasNativePreference = Test-Path variable:PSNativeCommandUseErrorActionPreference
+
+  try {
+    $ErrorActionPreference = "Continue"
+    if ($hasNativePreference) {
+      $previousNativePreference = $PSNativeCommandUseErrorActionPreference
+      $script:PSNativeCommandUseErrorActionPreference = $false
+    }
+
+    $status = & curl.exe `
+      --silent `
+      --show-error `
+      --connect-timeout 5 `
+      --max-time 30 `
+      --output $bodyFile `
+      --write-out "%{http_code}" `
+      @CurlArgs 2>$null
+
+    if ($LASTEXITCODE -ne 0) {
+      $status = ""
+    }
+  } catch {
+    $status = ""
+  } finally {
+    $ErrorActionPreference = $previousErrorActionPreference
+    if ($hasNativePreference) {
+      $script:PSNativeCommandUseErrorActionPreference = $previousNativePreference
+    }
+  }
 
   [pscustomobject]@{
     Status = "$status".Trim()
@@ -299,7 +323,7 @@ function Wait-ForFrontend {
   Write-Host "==> Waiting for frontend at $FrontendBaseUrl"
 
   for ($i = 0; $i -lt 90; $i += 1) {
-    $result = Get-HttpStatus @("$FrontendBaseUrl/status")
+    $result = Get-HttpStatus @("$FrontendBaseUrl/config")
 
     if ($result.Status -eq "200") {
       Write-Host "==> Frontend is ready"
@@ -340,7 +364,8 @@ function Run-LightSmokeTests {
       "$BackendBaseUrl/api/config"
     )
 
-  Assert-Http "frontend status page" "200" @("$FrontendBaseUrl/status")
+  Assert-Http "frontend settings page" "200" @("$FrontendBaseUrl/config")
+  Assert-Http "frontend status redirect" "303" @("$FrontendBaseUrl/status")
   Assert-Http "frontend dashboard page" "200" @("$FrontendBaseUrl/")
   Assert-Http "frontend API proxy health" "200" @("$FrontendBaseUrl/api/health")
 }

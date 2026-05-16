@@ -4,6 +4,8 @@ import { PaperAnalyzer } from './paper_analyzer';
 import { ArxivSniffer } from './arxiv_sniffer';
 import { AnalysisResult, Paper, PipelineResult, PaperSniffer } from './models';
 
+const BEIJING_TIME_OFFSET_MS = 8 * 60 * 60 * 1000;
+
 /*
  * Pipeline 是业务流程的总调度器。
  *
@@ -131,16 +133,37 @@ export class Pipeline {
       },
     );
 
-    // 默认注册 arXiv 嗅探器
-    this.registerSniffer(new ArxivSniffer(
-      config.domain_rules,
-      config.max_results_per_category,
-    ));
+    this.registerConfiguredSniffers();
   }
 
   /** 注册新的论文嗅探器（如未来的 Semantic Scholar） */
   registerSniffer(sniffer: PaperSniffer): void {
     this.sniffers.push(sniffer);
+  }
+
+  private registerConfiguredSniffers(): void {
+    const enabledSources = this.config.sources.filter(source => source.enabled);
+
+    for (const source of enabledSources) {
+      const rules = this.config.domain_rules.filter(rule => rule.source === source.id);
+      if (rules.length === 0) {
+        console.info(`来源 ${source.name} (${source.id}) 没有领域规则，跳过注册`);
+        continue;
+      }
+
+      if (source.type === 'arxiv') {
+        this.registerSniffer(new ArxivSniffer(
+          rules,
+          this.config.max_results_per_category,
+          undefined,
+          source.id,
+          source.name,
+        ));
+        continue;
+      }
+
+      console.warn(`来源 ${source.name} (${source.type}) 暂未实现嗅探器，已跳过`);
+    }
   }
 
   // 第一步：从所有注册的嗅探器中获取论文，并进行去重和历史过滤。
@@ -174,7 +197,9 @@ export class Pipeline {
     return newPapers;
   }
 
-  // 第二步：把论文交给大模型分析，并按 relevance_threshold 做过滤。
+  // 第二步：把论文交给大模型分析。
+  // keywords 现在表示“重点关注关键词”，用于评估和前端重点推送排序，
+  // 不再作为后端丢弃论文的过滤条件。
   async analyzePapers(papers: Paper[]): Promise<AnalysisResult[]> {
     if (papers.length === 0) {
       console.info('没有论文需要分析');
@@ -189,10 +214,10 @@ export class Pipeline {
       10,
     );
 
-    return this.analyzer.applyThreshold(results);
+    return results;
   }
 
-  // 第三步：保存筛选后的分析结果。
+  // 第三步：保存完整的分析结果。
   // 在 Worker 环境下，实际会由 WorkerD1Storage 写入 D1；对外读取见 GET /api/analysis-results。
   async saveResults(results: AnalysisResult[], targetDate: string): Promise<string> {
     const resultsData = this.serializeResults(results);
@@ -231,18 +256,19 @@ export class Pipeline {
       return {
         date: targetDateStr,
         total_fetched: 0,
+        total_analyzed: 0,
         total_filtered: 0,
         results: [],
       };
     }
 
     console.info('步骤 2: 开始分析论文摘要');
-    const filteredResults = await this.analyzePapers(papers);
-    const totalFiltered = filteredResults.length;
-    console.info(`步骤 2 完成: 分析并筛选后保留 ${totalFiltered} 篇`);
+    const analyzedResults = await this.analyzePapers(papers);
+    const totalAnalyzed = analyzedResults.length;
+    console.info(`步骤 2 完成: 已分析 ${totalAnalyzed} 篇，未按重点关注词丢弃论文`);
 
     console.info('步骤 3: 保存分析结果');
-    await this.saveResults(filteredResults, targetDateStr);
+    await this.saveResults(analyzedResults, targetDateStr);
 
     console.info('步骤 4: 更新处理历史');
     await this.updateHistory(papers);
@@ -254,8 +280,9 @@ export class Pipeline {
     return {
       date: targetDateStr,
       total_fetched: totalFetched,
-      total_filtered: totalFiltered,
-      results: filteredResults,
+      total_analyzed: totalAnalyzed,
+      total_filtered: totalAnalyzed,
+      results: analyzedResults,
     };
   }
 
@@ -277,16 +304,14 @@ export class Pipeline {
     }));
   }
 
-  // 如果用户没有指定日期，默认处理两天前。
+  // 如果用户没有指定日期，默认处理北京时间当日论文。
   // 这个逻辑和 ArxivSniffer 保持一致，避免日期显示和实际查询不一致。
   private resolveTargetDate(targetDate?: Date): string {
     if (targetDate) {
       return this.formatDate(targetDate);
     }
 
-    const twoDaysAgo = new Date();
-    twoDaysAgo.setUTCDate(twoDaysAgo.getUTCDate() - 2);
-    return this.formatDate(twoDaysAgo);
+    return this.formatDate(new Date(Date.now() + BEIJING_TIME_OFFSET_MS));
   }
 
   // 统一使用 UTC 日期，减少本地时区和 Worker 部署地区带来的差异。

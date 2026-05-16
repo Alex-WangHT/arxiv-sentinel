@@ -4,6 +4,7 @@ import {
   EditableConfig,
   Flash,
   HealthResponse,
+  PaperSourceConfig,
   RunResponse,
   Score,
   UiFilters,
@@ -17,49 +18,52 @@ const SCORE_TEXT: Record<Score, string> = {
   IRRELEVANT: '无关',
 };
 
-const CONFIG_SOURCE_TEXT: Record<string, string> = {
-  kv: 'KV',
-  env: '环境变量',
-  default: '默认配置',
-};
+interface KeywordFacet {
+  value: string;
+  count: number;
+}
 
-const DEFAULT_SYSTEM_PROMPT = `你是一位学术论文分析专家。你的任务是对给定的论文标题和摘要进行深入分析，同时评估它与给定关键词的相关度。
+export interface DashboardRefreshState {
+  kind: 'running' | 'completed' | 'error';
+  date: string;
+  attempt: number;
+  nextUrl?: string;
+  message: string;
+}
+
+const DEFAULT_SYSTEM_PROMPT = `你是一位学术论文分析专家。你的任务是对给定的论文标题和摘要进行深入分析，同时评估它与给定重点关注关键词的相关度。
 
 请严格按以下 JSON 格式返回分析结果：
 {
   "score": "HIGH|MEDIUM|LOW|IRRELEVANT",
-  "reason": "评估理由，中文，1-2 句话",
+  "reason": "评估理由，中文，1-2 句话；如果论文不匹配重点关注关键词，也要说明它的实际主题",
   "core_methods": "核心技术方法，中文，说明论文使用的主要技术、算法、模型或方法论",
   "problem": "要解决的问题，中文，清晰描述论文试图解决的核心问题或挑战",
   "keywords": ["keyword1", "keyword2", "keyword3"]
 }
 
 相关度评分标准：
-- HIGH: 论文核心主题与关键词高度相关，是该领域的直接贡献
-- MEDIUM: 论文与关键词有一定关联，但不是核心主题
-- LOW: 论文仅边缘性地涉及关键词相关内容
-- IRRELEVANT: 论文与关键词无实质关联
+- HIGH: 论文核心主题与重点关注关键词高度相关，是该领域的直接贡献
+- MEDIUM: 论文与重点关注关键词有一定关联，但不是核心主题
+- LOW: 论文仅边缘性地涉及重点关注关键词相关内容
+- IRRELEVANT: 论文与重点关注关键词无实质关联，但仍需要正常总结
 
 请仅返回 JSON 对象，不要包含其他内容。`;
 
-const DEFAULT_USER_TEMPLATE = `关键词：{keywords}
+const DEFAULT_USER_TEMPLATE = `重点关注关键词：{keywords}
 
 论文标题：{title}
 
 论文摘要：{abstract}
 
-请对这篇论文进行综合分析，评估与关键词的相关度并提取核心信息，返回 JSON 格式的结果。`;
-
-function sourceText(source: string | undefined): string {
-  return source ? CONFIG_SOURCE_TEXT[source] || source : '校验结果';
-}
+请对这篇论文进行综合分析，评估与重点关注关键词的相关度并提取核心信息。即使论文不匹配重点关注关键词，也请返回 JSON 格式的完整分析结果。`;
 
 function scoreText(score: string | undefined): string {
   return score && score in SCORE_TEXT ? SCORE_TEXT[score as Score] : '未知';
 }
 
 export function todayUtc(): string {
-  return new Date().toISOString().slice(0, 10);
+  return new Date(Date.now() + 8 * 60 * 60 * 1000).toISOString().slice(0, 10);
 }
 
 export function escapeHtml(value: unknown): string {
@@ -97,13 +101,6 @@ function pageShell(options: {
   current: 'dashboard' | 'config' | 'run' | 'status';
   body: string;
 }): string {
-  const nav = [
-    ['dashboard', '/', '论文雷达'],
-    ['config', '/config', '配置'],
-    ['run', '/run', '运行'],
-    ['status', '/status', '状态'],
-  ] as const;
-
   return `<!doctype html>
 <html lang="zh-CN">
 <head>
@@ -114,7 +111,7 @@ function pageShell(options: {
 </head>
 <body>
   <div class="app">
-    <aside class="sidebar">
+    <header class="topbar">
       <a class="brand" href="/">
         <span class="brand-mark">PS</span>
         <span>
@@ -122,10 +119,15 @@ function pageShell(options: {
           <small>科研论文雷达</small>
         </span>
       </a>
-      <nav class="nav">
-        ${nav.map(([key, href, label]) => `<a class="${options.current === key ? 'active' : ''}" href="${href}">${label}</a>`).join('')}
-      </nav>
-    </aside>
+      <div class="top-actions">
+        <a class="icon-button${options.current === 'config' ? ' active' : ''}" href="/config" aria-label="配置" title="配置">
+          <svg aria-hidden="true" viewBox="0 0 24 24">
+            <path d="M12 8.2a3.8 3.8 0 1 0 0 7.6 3.8 3.8 0 0 0 0-7.6Z"></path>
+            <path d="M19.4 13.5a7.9 7.9 0 0 0 .1-1.5 7.9 7.9 0 0 0-.1-1.5l2-1.5-2-3.5-2.4 1a8.3 8.3 0 0 0-2.6-1.5L14 2.4h-4L9.6 5a8.3 8.3 0 0 0-2.6 1.5l-2.4-1-2 3.5 2 1.5a7.9 7.9 0 0 0-.1 1.5c0 .5 0 1 .1 1.5l-2 1.5 2 3.5 2.4-1a8.3 8.3 0 0 0 2.6 1.5l.4 2.6h4l.4-2.6a8.3 8.3 0 0 0 2.6-1.5l2.4 1 2-3.5-2-1.5Z"></path>
+          </svg>
+        </a>
+      </div>
+    </header>
     <main class="main">
       ${options.body}
     </main>
@@ -139,12 +141,19 @@ function scoreClass(score: string): string {
   return `score-${score.toLowerCase()}`;
 }
 
-function tagList(values: string[], className = 'tag'): string {
+function tagList(values: string[], className = 'tag', linkForValue?: (value: string) => string): string {
   if (values.length === 0) {
     return '<span class="muted">无</span>';
   }
 
-  return values.map(value => `<span class="${className}">${escapeHtml(value)}</span>`).join('');
+  return values.map(value => {
+    const body = escapeHtml(value);
+    if (!linkForValue) {
+      return `<span class="${className}">${body}</span>`;
+    }
+
+    return `<a class="${className}" href="${escapeAttr(linkForValue(value))}">${body}</a>`;
+  }).join('');
 }
 
 function queryString(filters: UiFilters, overrides: Partial<UiFilters> = {}): string {
@@ -154,7 +163,7 @@ function queryString(filters: UiFilters, overrides: Partial<UiFilters> = {}): st
   };
   const params = new URLSearchParams();
 
-  for (const key of ['date', 'q', 'score', 'category', 'keyword', 'selected'] as const) {
+  for (const key of ['date', 'q', 'score', 'keyword', 'selected', 'view'] as const) {
     const value = merged[key];
     if (value) {
       params.set(key, value);
@@ -174,11 +183,17 @@ function renderScoreOptions(selected: string): string {
   }).join('');
 }
 
-function renderDashboardToolbar(filters: UiFilters): string {
+function renderDashboardToolbar(filters: UiFilters, refreshState?: DashboardRefreshState): string {
   const exportMd = `/export.md${queryString(filters, { selected: '' })}`;
   const exportJson = `/export.json${queryString(filters, { selected: '' })}`;
+  const runningFields = refreshState?.kind === 'running'
+    ? `<input type="hidden" name="running" value="1"><input type="hidden" name="attempt" value="${escapeAttr(refreshState.attempt)}">`
+    : '';
 
   return `<form class="toolbar" method="get" action="/">
+    <input type="hidden" name="ensure" value="1">
+    ${runningFields}
+    <input type="hidden" name="view" value="${escapeAttr(filters.view)}">
     <label>
       <span>日期</span>
       <input type="date" name="date" value="${escapeAttr(filters.date)}">
@@ -192,17 +207,83 @@ function renderDashboardToolbar(filters: UiFilters): string {
       <select name="score">${renderScoreOptions(filters.score)}</select>
     </label>
     <label>
-      <span>分类</span>
-      <input name="category" value="${escapeAttr(filters.category)}" placeholder="cs.CL">
-    </label>
-    <label>
-      <span>关键词</span>
+      <span>结果关键词</span>
       <input name="keyword" value="${escapeAttr(filters.keyword)}" placeholder="agent">
     </label>
     <button type="submit">刷新</button>
     <a class="button secondary" href="${exportMd}">导出 Markdown</a>
     <a class="button secondary" href="${exportJson}">导出 JSON</a>
   </form>`;
+}
+
+function renderRefreshStatus(state?: DashboardRefreshState): string {
+  if (!state) {
+    return '';
+  }
+
+  const next = state.nextUrl
+    ? `<p class="muted">页面会自动检查结果；已检查 ${state.attempt} 次。</p>`
+    : '';
+  const progress = state.kind === 'running'
+    ? '<div class="progress"><span></span></div>'
+    : '';
+  const action = state.nextUrl
+    ? `<a class="button secondary mini" href="${escapeAttr(state.nextUrl)}">立即检查</a>`
+    : '';
+
+  return `<section class="refresh-status refresh-${escapeAttr(state.kind)}"${state.nextUrl ? ` data-auto-refresh-url="${escapeAttr(state.nextUrl)}"` : ''}>
+    <div>
+      <h2>${state.kind === 'running' ? '正在运行流水线' : state.kind === 'completed' ? '刷新完成' : '刷新失败'}</h2>
+      <p>${escapeHtml(state.message)}</p>
+      ${next}
+      ${progress}
+    </div>
+    ${action}
+  </section>`;
+}
+
+function renderViewTabs(filters: UiFilters, focusTotal: number, totalCount: number): string {
+  const focusHref = `/${queryString(filters, { view: 'focus', selected: '' })}`;
+  const allHref = `/${queryString(filters, { view: 'all', selected: '' })}`;
+
+  return `<nav class="view-tabs" aria-label="论文视图">
+    <a class="${filters.view === 'focus' ? 'active' : ''}" href="${escapeAttr(focusHref)}">
+      <span>重点推送</span>
+      <strong>${focusTotal}</strong>
+    </a>
+    <a class="${filters.view === 'all' ? 'active' : ''}" href="${escapeAttr(allHref)}">
+      <span>全部论文</span>
+      <strong>${totalCount}</strong>
+    </a>
+  </nav>`;
+}
+
+function renderKeywordFacets(facets: KeywordFacet[], filters: UiFilters): string {
+  if (facets.length === 0) {
+    return '';
+  }
+
+  const active = filters.keyword.toLowerCase();
+  const clear = filters.keyword
+    ? `<a class="keyword-filter clear" href="/${queryString(filters, { keyword: '', selected: '' })}">全部关键词</a>`
+    : '';
+
+  return `<section class="keyword-filters" aria-label="结果关键词筛选">
+    <div class="keyword-filter-head">
+      <h2>结果关键词</h2>
+      ${clear}
+    </div>
+    <div class="keyword-filter-list">
+      ${facets.map(facet => {
+        const isActive = facet.value.toLowerCase() === active;
+        const href = `/${queryString(filters, { keyword: isActive ? '' : facet.value, selected: '' })}`;
+        return `<a class="keyword-filter${isActive ? ' active' : ''}" href="${escapeAttr(href)}">
+          <span>${escapeHtml(facet.value)}</span>
+          <strong>${facet.count}</strong>
+        </a>`;
+      }).join('')}
+    </div>
+  </section>`;
 }
 
 function renderStats(results: AnalysisResultRecord[], totalCount: number): string {
@@ -229,10 +310,11 @@ function renderPaperList(results: AnalysisResultRecord[], filters: UiFilters, se
   return `<section class="paper-list" aria-label="论文结果">
     ${results.map(result => {
       const active = selected?.id === result.id ? ' active' : '';
+      const anchor = paperAnchorId(result);
       const href = active
-        ? `/${queryString(filters, { selected: '' })}`
-        : `/${queryString(filters, { selected: result.id })}`;
-      return `<article class="paper-card${active}">
+        ? `/${queryString(filters, { selected: '' })}#${anchor}`
+        : `/${queryString(filters, { selected: result.id })}#${anchor}`;
+      return `<article id="${escapeAttr(anchor)}" class="paper-card${active}">
         <div class="paper-head">
           <span class="score ${scoreClass(result.score)}">${SCORE_TEXT[result.score]}</span>
           <span class="paper-head-actions">
@@ -244,13 +326,17 @@ function renderPaperList(results: AnalysisResultRecord[], filters: UiFilters, se
         <p>${escapeHtml(compactText(result.reason || result.abstract))}</p>
         <div class="tags">${tagList(result.categories.slice(0, 4))}</div>
         <div class="paper-meta">${escapeHtml(compactText(result.authors.join(', '), 120))}</div>
-        ${active ? renderPaperInlineDetail(result) : ''}
+        ${active ? renderPaperInlineDetail(result, filters) : ''}
       </article>`;
     }).join('')}
   </section>`;
 }
 
-function renderPaperInlineDetail(result: AnalysisResultRecord): string {
+function paperAnchorId(result: AnalysisResultRecord): string {
+  return `paper-${result.record_id}`;
+}
+
+function renderPaperInlineDetail(result: AnalysisResultRecord, filters: UiFilters): string {
   return `<div class="paper-card-detail">
     <div class="detail-actions">
       <a class="button secondary" href="${escapeAttr(result.paper_url)}" target="_blank" rel="noreferrer">打开论文</a>
@@ -263,7 +349,7 @@ function renderPaperInlineDetail(result: AnalysisResultRecord): string {
       <dt>分类</dt>
       <dd class="tags">${tagList(result.categories)}</dd>
       <dt>关键词</dt>
-      <dd class="tags">${tagList(result.keywords, 'tag keyword')}</dd>
+      <dd class="tags">${tagList(result.keywords, 'tag keyword', keyword => `/${queryString(filters, { keyword, selected: '' })}`)}</dd>
       <dt>推荐理由</dt>
       <dd>${escapeHtml(result.reason)}</dd>
       <dt>核心方法</dt>
@@ -280,7 +366,11 @@ export function renderDashboardPage(options: {
   filters: UiFilters;
   results: AnalysisResultRecord[];
   totalCount: number;
+  focusTotal: number;
   selected?: AnalysisResultRecord;
+  keywordFacets: KeywordFacet[];
+  runResponse?: RunResponse;
+  refreshState?: DashboardRefreshState;
   flash?: Flash;
 }): string {
   const body = `${renderFlash(options.flash)}
@@ -289,9 +379,11 @@ export function renderDashboardPage(options: {
       <p class="eyebrow">论文雷达</p>
       <h1>${escapeHtml(options.filters.date)} 分析结果</h1>
     </div>
-    <a class="button" href="/run?date=${encodeURIComponent(options.filters.date)}">立即运行</a>
   </header>
-  ${renderDashboardToolbar(options.filters)}
+  ${renderRefreshStatus(options.refreshState)}
+  ${renderViewTabs(options.filters, options.focusTotal, options.totalCount)}
+  ${renderDashboardToolbar(options.filters, options.refreshState)}
+  ${renderKeywordFacets(options.keywordFacets, options.filters)}
   ${renderStats(options.results, options.totalCount)}
   ${renderPaperList(options.results, options.filters, options.selected)}`;
 
@@ -319,10 +411,10 @@ function renderKeywordRows(keywords: string[]): string {
   return `<section class="field-group wide" data-repeat-list data-input-name="keyword" data-placeholder="例如：large language model">
     <div class="subhead">
       <div>
-        <h2>关键词</h2>
-        <p>每行一个关键词，用来筛选论文主题。</p>
+        <h2>重点关注关键词</h2>
+        <p>用于模型相关性评分和首页重点推送；不匹配的论文仍会保存到全部论文。</p>
       </div>
-      <button class="button secondary mini" type="button" data-add-row>添加关键词</button>
+      <button class="button secondary mini" type="button" data-add-row>添加关注词</button>
     </div>
     <div class="list-rows" data-list-rows>
       ${rows.map(keyword => `<div class="list-row">
@@ -333,12 +425,104 @@ function renderKeywordRows(keywords: string[]): string {
   </section>`;
 }
 
-function renderDomainRuleRow(rule: EditableConfig['domain_rules'][number]): string {
+function normalizedSources(sources: EditableConfig['sources'] | undefined): PaperSourceConfig[] {
+  const usable = (sources || [])
+    .filter(source => source.id)
+    .map(source => ({
+      id: source.id,
+      type: source.type === 'arxiv' ? 'arxiv' as const : 'custom' as const,
+      name: source.name || source.id,
+      enabled: source.enabled !== false,
+    }));
+
+  return usable.length > 0
+    ? usable
+    : [{ id: 'arxiv', type: 'arxiv', name: 'arXiv', enabled: true }];
+}
+
+function sourceTypeText(type: PaperSourceConfig['type']): string {
+  return type === 'arxiv' ? 'arXiv' : '自定义来源';
+}
+
+function sourceOptionLabel(source: PaperSourceConfig): string {
+  const state = source.enabled ? '' : '（停用）';
+  return `${source.name || source.id} · ${sourceTypeText(source.type)}${state}`;
+}
+
+function renderSourceTypeOptions(selected: PaperSourceConfig['type']): string {
+  return [
+    ['arxiv', 'arXiv'],
+    ['custom', '自定义来源'],
+  ].map(([value, label]) =>
+    `<option value="${value}" ${selected === value ? 'selected' : ''}>${label}</option>`,
+  ).join('');
+}
+
+function renderSourceRows(sources: EditableConfig['sources'] | undefined): string {
+  const displaySources = normalizedSources(sources);
+
+  return `<section class="field-group wide" data-source-registry>
+    <div class="subhead">
+      <div>
+        <h2>论文来源</h2>
+        <p>先注册可用来源，再在领域规则里选择来源。当前已实现 arXiv，自定义来源会保留配置，待接入对应嗅探器后启用。</p>
+      </div>
+      <button class="button secondary mini" type="button" data-add-source>添加来源</button>
+    </div>
+    <div class="source-list" data-source-list>
+      ${displaySources.map(source => `<article class="source-card" data-source-row>
+        <label>
+          <span>来源标识</span>
+          <input name="source_id" value="${escapeAttr(source.id)}" placeholder="例如：arxiv" data-source-id>
+        </label>
+        <label>
+          <span>来源类型</span>
+          <select name="source_type" data-source-type>${renderSourceTypeOptions(source.type)}</select>
+        </label>
+        <label>
+          <span>显示名称</span>
+          <input name="source_name" value="${escapeAttr(source.name)}" placeholder="例如：arXiv" data-source-name>
+        </label>
+        <label>
+          <span>状态</span>
+          <select name="source_enabled" data-source-enabled>
+            <option value="true" ${source.enabled ? 'selected' : ''}>启用</option>
+            <option value="false" ${!source.enabled ? 'selected' : ''}>停用</option>
+          </select>
+        </label>
+        <button class="button secondary danger mini source-delete" type="button" data-remove-source>删除来源</button>
+      </article>`).join('')}
+    </div>
+  </section>`;
+}
+
+function renderSourceOptions(
+  sources: PaperSourceConfig[],
+  selected: string | undefined,
+): string {
+  const fallback = sources.find(source => source.enabled)?.id || sources[0]?.id || 'arxiv';
+  const selectedSource = selected || fallback;
+
+  return sources.map(source =>
+    `<option value="${escapeAttr(source.id)}" ${source.id === selectedSource ? 'selected' : ''}>${escapeHtml(sourceOptionLabel(source))}</option>`,
+  ).join('');
+}
+
+function renderDomainRuleRow(
+  rule: EditableConfig['domain_rules'][number],
+  sources: PaperSourceConfig[],
+): string {
   const filterHidden = rule.mode === 'categories_filter' ? '' : ' is-hidden';
 
   return `<article class="rule-card" data-domain-rule>
     <label>
-      <span>arXiv 分类</span>
+      <span>来源</span>
+      <select name="domain_source" data-domain-source>
+        ${renderSourceOptions(sources, rule.source)}
+      </select>
+    </label>
+    <label>
+      <span>领域分类</span>
       <input name="domain_category" value="${escapeAttr(rule.category)}" placeholder="例如：cs.CL">
     </label>
     <label>
@@ -356,21 +540,26 @@ function renderDomainRuleRow(rule: EditableConfig['domain_rules'][number]): stri
   </article>`;
 }
 
-function renderDomainRuleRows(rules: EditableConfig['domain_rules']): string {
+function renderDomainRuleRows(
+  rules: EditableConfig['domain_rules'],
+  sources: EditableConfig['sources'] | undefined,
+): string {
+  const displaySources = normalizedSources(sources);
+  const fallbackSource = displaySources.find(source => source.enabled)?.id || displaySources[0]?.id || 'arxiv';
   const displayRules = rules.length > 0
     ? rules
-    : [{ category: '', mode: 'accept_all' as const, filter_categories: [] }];
+    : [{ source: fallbackSource, category: '', mode: 'accept_all' as const, filter_categories: [] }];
 
   return `<section class="field-group wide" data-domain-rules>
     <div class="subhead">
       <div>
         <h2>领域规则</h2>
-        <p>用分类和下拉选项控制 arXiv 抓取范围，不需要编辑 JSON。</p>
+        <p>每条规则先选择来源，再配置该来源下的领域分类和匹配方式。</p>
       </div>
       <button class="button secondary mini" type="button" data-add-domain-rule>添加规则</button>
     </div>
     <div class="rule-list" data-domain-rule-list>
-      ${displayRules.map(renderDomainRuleRow).join('')}
+      ${displayRules.map(rule => renderDomainRuleRow(rule, displaySources)).join('')}
     </div>
   </section>`;
 }
@@ -381,7 +570,8 @@ function renderConfigForm(config: EditableConfig): string {
 
   return `<form class="form-grid" method="post">
     ${renderKeywordRows(config.keywords || [])}
-    ${renderDomainRuleRows(config.domain_rules || [])}
+    ${renderSourceRows(config.sources)}
+    ${renderDomainRuleRows(config.domain_rules || [], config.sources)}
     <label>
       <span>相关性阈值</span>
       <select name="relevance_threshold">
@@ -428,10 +618,13 @@ function renderConfigForm(config: EditableConfig): string {
 export function renderConfigPage(options: {
   config: EditableConfig;
   response?: ConfigResponse;
+  health?: HealthResponse;
+  backendBaseUrl?: string;
+  statusErrors?: string[];
   flash?: Flash;
 }): string {
   const source = options.response
-    ? `<div class="meta-bar"><span>配置来源：<strong>${escapeHtml(sourceText(options.response.source))}</strong></span><span>KV Key：${escapeHtml(options.response.key || '未写入')}</span></div>`
+    ? `<div class="meta-bar"><span>KV Key：${escapeHtml(options.response.key || '未写入')}</span></div>`
     : '';
 
   const body = `${renderFlash(options.flash)}
@@ -442,6 +635,12 @@ export function renderConfigPage(options: {
     </div>
   </header>
   ${source}
+  ${renderStatusPanel({
+    health: options.health,
+    config: options.response,
+    backendBaseUrl: options.backendBaseUrl,
+    errors: options.statusErrors || [],
+  })}
   <section class="panel">
     ${renderConfigForm(options.config)}
   </section>`;
@@ -453,20 +652,43 @@ export function renderConfigPage(options: {
   });
 }
 
+function renderRunPanel(defaultDate: string, response?: RunResponse): string {
+  const analyzedCount = response && !response.queued
+    ? response.result.total_analyzed ?? response.result.total_filtered
+    : 0;
+  const responseHtml = response
+    ? `<div class="run-result">
+        <h3>运行结果</h3>
+        ${response.queued
+          ? `<p>${escapeHtml(response.targetDate)} 的任务已进入队列。</p><a class="button secondary mini" href="/?date=${encodeURIComponent(response.targetDate)}">查看结果</a>`
+          : `<p>${escapeHtml(response.result.date)} 已完成。抓取 ${response.result.total_fetched} 篇，分析 ${analyzedCount} 篇。</p><a class="button secondary mini" href="/?date=${encodeURIComponent(response.result.date)}">查看结果</a>`}
+      </div>`
+    : '';
+
+  return `<section class="panel run-panel" id="run-panel">
+    <div class="subhead">
+      <div>
+        <h2>运行流水线</h2>
+        <p>手动触发当前日期的抓取和分析任务：${escapeHtml(defaultDate)}</p>
+      </div>
+    </div>
+    <form class="run-form" method="post" action="/run">
+      <input type="hidden" name="date" value="${escapeAttr(defaultDate)}">
+      <label class="check">
+        <input type="checkbox" name="sync" value="true">
+        <span>同步运行</span>
+      </label>
+      <button type="submit">开始运行</button>
+    </form>
+    ${responseHtml ? `<div class="run-response">${responseHtml}</div>` : ''}
+  </section>`;
+}
+
 export function renderRunPage(options: {
   defaultDate: string;
   response?: RunResponse;
   flash?: Flash;
 }): string {
-  const response = options.response
-    ? `<section class="panel">
-        <h2>运行结果</h2>
-        ${options.response.queued
-          ? `<p>${escapeHtml(options.response.targetDate)} 的任务已进入队列。</p><a class="button secondary" href="/?date=${encodeURIComponent(options.response.targetDate)}">查看结果</a>`
-          : `<p>${escapeHtml(options.response.result.date)} 已完成。抓取 ${options.response.result.total_fetched} 篇，保留 ${options.response.result.total_filtered} 篇。</p><a class="button secondary" href="/?date=${encodeURIComponent(options.response.result.date)}">查看结果</a>`}
-      </section>`
-    : '';
-
   const body = `${renderFlash(options.flash)}
   <header class="page-header">
     <div>
@@ -474,28 +696,42 @@ export function renderRunPage(options: {
       <h1>运行流水线</h1>
     </div>
   </header>
-  <section class="panel narrow">
-    <form class="form-grid" method="post" action="/run">
-      <label>
-        <span>目标日期</span>
-        <input type="date" name="date" value="${escapeAttr(options.defaultDate)}">
-      </label>
-      <label class="check">
-        <input type="checkbox" name="sync" value="true">
-        <span>同步运行，用于调试</span>
-      </label>
-      <div class="actions wide">
-        <button type="submit">开始运行</button>
-      </div>
-    </form>
-  </section>
-  ${response}`;
+  ${renderRunPanel(options.defaultDate, options.response)}`;
 
   return pageShell({
     title: 'PaperSniffer 运行',
     current: 'run',
     body,
   });
+}
+
+function renderStatusPanel(options: {
+  health?: HealthResponse;
+  config?: ConfigResponse;
+  backendBaseUrl?: string;
+  errors: string[];
+}): string {
+  const error = options.errors.length > 0
+    ? `<div class="status-error">${escapeHtml(options.errors.join(' '))}</div>`
+    : '';
+
+  return `<section class="panel status-panel" id="status-panel">
+    <div class="subhead">
+      <div>
+        <h2>系统状态</h2>
+        <p>后端连通性和当前运行参数。</p>
+      </div>
+      <a class="button secondary mini" href="/config#status-panel">刷新</a>
+    </div>
+    ${error}
+    <dl class="details compact">
+      <dt>后端</dt><dd>${options.health ? '在线' : '不可用'}</dd>
+      <dt>地址</dt><dd>${escapeHtml(options.backendBaseUrl || '未配置')}</dd>
+      <dt>运行时</dt><dd>${escapeHtml(options.health?.runtime || '未知')}</dd>
+      <dt>模型</dt><dd>${escapeHtml(options.config?.effective_config.openai_model || '未知')}</dd>
+      <dt>阈值</dt><dd>${escapeHtml(scoreText(options.config?.effective_config.relevance_threshold))}</dd>
+    </dl>
+  </section>`;
 }
 
 export function renderStatusPage(options: {
@@ -511,25 +747,7 @@ export function renderStatusPage(options: {
       <h1>状态</h1>
     </div>
   </header>
-  <section class="status-grid">
-    <div class="panel">
-      <h2>后端</h2>
-      <dl class="details compact">
-        <dt>地址</dt><dd>${escapeHtml(options.backendBaseUrl || '未配置')}</dd>
-        <dt>健康状态</dt><dd>${options.health ? '在线' : '不可用'}</dd>
-        <dt>运行时</dt><dd>${escapeHtml(options.health?.runtime || '未知')}</dd>
-      </dl>
-    </div>
-    <div class="panel">
-      <h2>配置</h2>
-      <dl class="details compact">
-        <dt>来源</dt><dd>${escapeHtml(sourceText(options.config?.source))}</dd>
-        <dt>KV Key</dt><dd>${escapeHtml(options.config?.key || '未知')}</dd>
-        <dt>模型</dt><dd>${escapeHtml(options.config?.effective_config.openai_model || '未知')}</dd>
-        <dt>阈值</dt><dd>${escapeHtml(scoreText(options.config?.effective_config.relevance_threshold))}</dd>
-      </dl>
-    </div>
-  </section>`;
+  ${renderStatusPanel(options)}`;
 
   return pageShell({
     title: 'PaperSniffer 状态',
@@ -558,6 +776,16 @@ export function renderErrorPage(title: string, message: string): string {
 
 const APP_JS = `
 (() => {
+  const autoRefresh = document.querySelector('[data-auto-refresh-url]');
+  if (autoRefresh instanceof HTMLElement) {
+    const url = autoRefresh.getAttribute('data-auto-refresh-url');
+    if (url) {
+      window.setTimeout(() => {
+        window.location.href = url;
+      }, 5000);
+    }
+  }
+
   function bindRepeatList(root) {
     const rows = root.querySelector('[data-list-rows]');
     const inputName = root.getAttribute('data-input-name') || 'item';
@@ -591,9 +819,111 @@ const APP_JS = `
     });
   }
 
+  function escapeOption(value) {
+    return String(value || '')
+      .replaceAll('&', '&amp;')
+      .replaceAll('<', '&lt;')
+      .replaceAll('>', '&gt;')
+      .replaceAll('"', '&quot;');
+  }
+
+  function sourceTypeLabel(type) {
+    return type === 'arxiv' ? 'arXiv' : '自定义来源';
+  }
+
+  function collectSources() {
+    const rows = Array.from(document.querySelectorAll('[data-source-row]'));
+    const sources = rows.map(row => {
+      const id = row.querySelector('[data-source-id]')?.value.trim() || '';
+      const type = row.querySelector('[data-source-type]')?.value || 'custom';
+      const name = row.querySelector('[data-source-name]')?.value.trim() || id;
+      const enabled = row.querySelector('[data-source-enabled]')?.value !== 'false';
+      return { id, type, name, enabled };
+    }).filter(source => source.id);
+
+    return sources.length > 0 ? sources : [{ id: 'arxiv', type: 'arxiv', name: 'arXiv', enabled: true }];
+  }
+
+  function sourceOptions(selected) {
+    const sources = collectSources();
+    const fallback = sources.find(source => source.enabled)?.id || sources[0]?.id || 'arxiv';
+    const current = selected || fallback;
+    return sources.map(source => {
+      const label = (source.name || source.id) + ' · ' + sourceTypeLabel(source.type) + (source.enabled ? '' : '（停用）');
+      return '<option value="' + escapeOption(source.id) + '"' + (source.id === current ? ' selected' : '') + '>' + escapeOption(label) + '</option>';
+    }).join('');
+  }
+
+  function refreshDomainSourceOptions() {
+    document.querySelectorAll('[data-domain-source]').forEach(select => {
+      const selected = select.value;
+      select.innerHTML = sourceOptions(selected);
+      if (selected && Array.from(select.options).some(option => option.value === selected)) {
+        select.value = selected;
+      }
+    });
+  }
+
+  function sourceRowTemplate() {
+    return '<article class="source-card" data-source-row>' +
+      '<label><span>来源标识</span><input name="source_id" placeholder="例如：semantic-scholar" data-source-id></label>' +
+      '<label><span>来源类型</span><select name="source_type" data-source-type>' +
+      '<option value="arxiv">arXiv</option>' +
+      '<option value="custom" selected>自定义来源</option>' +
+      '</select></label>' +
+      '<label><span>显示名称</span><input name="source_name" placeholder="例如：Semantic Scholar" data-source-name></label>' +
+      '<label><span>状态</span><select name="source_enabled" data-source-enabled>' +
+      '<option value="true" selected>启用</option>' +
+      '<option value="false">停用</option>' +
+      '</select></label>' +
+      '<button class="button secondary danger mini source-delete" type="button" data-remove-source>删除来源</button>' +
+      '</article>';
+  }
+
+  function bindSourceRegistry(root) {
+    const list = root.querySelector('[data-source-list]');
+
+    root.addEventListener('input', refreshDomainSourceOptions);
+    root.addEventListener('change', refreshDomainSourceOptions);
+
+    root.addEventListener('click', event => {
+      const target = event.target;
+      if (!(target instanceof HTMLElement)) {
+        return;
+      }
+
+      if (target.matches('[data-add-source]')) {
+        list.insertAdjacentHTML('beforeend', sourceRowTemplate());
+        refreshDomainSourceOptions();
+      }
+
+      if (target.matches('[data-remove-source]')) {
+        const rows = list.querySelectorAll('[data-source-row]');
+        const row = target.closest('[data-source-row]');
+        if (row && rows.length > 1) {
+          row.remove();
+        } else if (row) {
+          row.querySelectorAll('input').forEach(input => {
+            input.value = '';
+          });
+          const type = row.querySelector('[data-source-type]');
+          const enabled = row.querySelector('[data-source-enabled]');
+          if (type) {
+            type.value = 'custom';
+          }
+          if (enabled) {
+            enabled.value = 'true';
+          }
+        }
+        refreshDomainSourceOptions();
+      }
+    });
+  }
+
   function domainRuleTemplate() {
     return '<article class="rule-card" data-domain-rule>' +
-      '<label><span>arXiv 分类</span><input name="domain_category" placeholder="例如：cs.CL"></label>' +
+      '<label><span>来源</span><select name="domain_source" data-domain-source>' + sourceOptions('') + '</select></label>' +
+      '<label><span>领域分类</span><input name="domain_category" placeholder="例如：cs.CL"></label>' +
       '<label><span>匹配方式</span><select name="domain_mode" data-domain-mode>' +
       '<option value="accept_all">接收该分类下全部论文</option>' +
       '<option value="categories_filter">只接收同时属于指定交叉分类的论文</option>' +
@@ -642,6 +972,10 @@ const APP_JS = `
 
       if (target.matches('[data-add-domain-rule]')) {
         list.insertAdjacentHTML('beforeend', domainRuleTemplate());
+        const rule = list.querySelector('[data-domain-rule]:last-child');
+        if (rule) {
+          syncDomainRule(rule);
+        }
       }
 
       if (target.matches('[data-remove-domain-rule]')) {
@@ -664,7 +998,9 @@ const APP_JS = `
   }
 
   document.querySelectorAll('[data-repeat-list]').forEach(bindRepeatList);
+  document.querySelectorAll('[data-source-registry]').forEach(bindSourceRegistry);
   document.querySelectorAll('[data-domain-rules]').forEach(bindDomainRules);
+  refreshDomainSourceOptions();
 })();
 `;
 
@@ -694,17 +1030,20 @@ body {
 }
 a { color: inherit; }
 .app {
-  display: grid;
-  grid-template-columns: 240px minmax(0, 1fr);
   min-height: 100vh;
 }
-.sidebar {
+.topbar {
+  align-items: center;
+  background: rgba(251, 252, 251, 0.96);
+  border-bottom: 1px solid var(--line);
+  display: flex;
+  gap: 18px;
+  justify-content: space-between;
+  min-height: 72px;
+  padding: 14px 28px;
   position: sticky;
   top: 0;
-  height: 100vh;
-  border-right: 1px solid var(--line);
-  background: #fbfcfb;
-  padding: 20px;
+  z-index: 10;
 }
 .brand {
   display: flex;
@@ -712,7 +1051,6 @@ a { color: inherit; }
   gap: 12px;
   color: inherit;
   text-decoration: none;
-  margin-bottom: 28px;
 }
 .brand-mark {
   display: grid;
@@ -726,26 +1064,40 @@ a { color: inherit; }
 }
 .brand strong, .brand small { display: block; }
 .brand small { color: var(--muted); margin-top: 2px; }
-.nav { display: grid; gap: 6px; }
-.nav a {
-  display: block;
-  width: 100%;
-  border: 0;
-  border-radius: 8px;
-  background: transparent;
-  color: var(--muted);
-  cursor: pointer;
-  font: inherit;
-  padding: 10px 12px;
-  text-align: left;
-  text-decoration: none;
+.top-actions {
+  align-items: center;
+  display: flex;
+  gap: 8px;
 }
-.nav a.active, .nav a:hover {
+.icon-button {
+  align-items: center;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--text);
+  cursor: pointer;
+  display: inline-flex;
+  height: 40px;
+  justify-content: center;
+  text-decoration: none;
+  width: 40px;
+}
+.icon-button svg {
+  fill: none;
+  height: 21px;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.8;
+  width: 21px;
+}
+.icon-button.active, .icon-button:hover {
   background: var(--surface-2);
   color: var(--text);
 }
 .main {
   width: min(1440px, 100%);
+  margin: 0 auto;
   padding: 28px;
 }
 .page-header {
@@ -770,9 +1122,136 @@ h2 { font-size: 18px; line-height: 1.25; }
 .toolbar {
   align-items: end;
   display: grid;
-  grid-template-columns: 150px minmax(220px, 1fr) 150px 130px 130px auto auto auto;
+  grid-template-columns: 150px minmax(220px, 1fr) 150px 150px auto auto auto;
   gap: 10px;
   margin-bottom: 16px;
+}
+.control-grid {
+  display: grid;
+  grid-template-columns: minmax(340px, 0.9fr) minmax(420px, 1.1fr);
+  gap: 16px;
+  margin-bottom: 16px;
+}
+.run-panel {
+  margin-bottom: 16px;
+}
+.run-form {
+  align-items: end;
+  display: grid;
+  grid-template-columns: auto auto;
+  gap: 10px;
+  justify-content: start;
+}
+.run-response {
+  margin-top: 12px;
+}
+.run-result {
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 12px;
+}
+.run-result h3 {
+  font-size: 15px;
+  margin-bottom: 6px;
+  margin-top: 0;
+}
+.run-result p {
+  color: #33413d;
+  margin-bottom: 10px;
+}
+.refresh-status {
+  align-items: center;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  display: flex;
+  gap: 16px;
+  justify-content: space-between;
+  margin-bottom: 16px;
+  padding: 14px 16px;
+}
+.refresh-status h2 {
+  font-size: 16px;
+  margin-bottom: 4px;
+}
+.refresh-status p {
+  color: #33413d;
+  margin-bottom: 6px;
+}
+.refresh-running {
+  border-color: #93c5fd;
+  box-shadow: inset 3px 0 0 var(--medium);
+}
+.refresh-completed {
+  border-color: #99f6e4;
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+.refresh-error {
+  border-color: #fecaca;
+  box-shadow: inset 3px 0 0 var(--danger);
+}
+.progress {
+  background: var(--surface-2);
+  border-radius: 999px;
+  height: 6px;
+  max-width: 360px;
+  overflow: hidden;
+}
+.progress span {
+  animation: progress-slide 1.4s ease-in-out infinite;
+  background: var(--medium);
+  border-radius: inherit;
+  display: block;
+  height: 100%;
+  width: 42%;
+}
+@keyframes progress-slide {
+  0% { transform: translateX(-110%); }
+  100% { transform: translateX(260%); }
+}
+.status-error {
+  background: #fef2f2;
+  border: 1px solid #fecaca;
+  border-radius: 8px;
+  color: #991b1b;
+  margin-bottom: 12px;
+  padding: 10px 12px;
+}
+.view-tabs {
+  display: inline-flex;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+.view-tabs a {
+  align-items: center;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--text);
+  display: inline-flex;
+  gap: 8px;
+  min-height: 38px;
+  padding: 8px 12px;
+  text-decoration: none;
+}
+.view-tabs a.active,
+.view-tabs a:hover {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: white;
+}
+.view-tabs strong {
+  background: rgba(15, 118, 110, 0.12);
+  border-radius: 999px;
+  font-size: 12px;
+  min-width: 24px;
+  padding: 2px 7px;
+  text-align: center;
+}
+.view-tabs a.active strong,
+.view-tabs a:hover strong {
+  background: rgba(255, 255, 255, 0.2);
 }
 label { display: grid; gap: 6px; }
 label span {
@@ -815,6 +1294,57 @@ button, .button {
   border-color: var(--line);
   color: var(--text);
 }
+.keyword-filters {
+  margin-bottom: 16px;
+}
+.keyword-filter-head {
+  align-items: center;
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+.keyword-filter-head h2 {
+  font-size: 15px;
+  margin: 0;
+}
+.keyword-filter-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.keyword-filter {
+  align-items: center;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: #33413d;
+  display: inline-flex;
+  gap: 7px;
+  min-height: 30px;
+  padding: 5px 10px;
+  text-decoration: none;
+}
+.keyword-filter:hover, .keyword-filter.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: white;
+}
+.keyword-filter strong {
+  background: rgba(15, 118, 110, 0.12);
+  border-radius: 999px;
+  font-size: 12px;
+  min-width: 22px;
+  padding: 2px 6px;
+  text-align: center;
+}
+.keyword-filter.active strong,
+.keyword-filter:hover strong {
+  background: rgba(255, 255, 255, 0.2);
+}
+.keyword-filter.clear {
+  color: var(--muted);
+}
 .stats {
   display: grid;
   grid-template-columns: repeat(6, minmax(0, 1fr));
@@ -842,6 +1372,7 @@ button, .button {
   border: 1px solid var(--line);
   border-radius: 8px;
   padding: 16px;
+  scroll-margin-top: 88px;
 }
 .paper-card.active {
   border-color: var(--accent);
@@ -861,6 +1392,11 @@ button, .button {
   display: flex;
   justify-content: space-between;
   gap: 10px;
+}
+.paper-head-actions {
+  align-items: center;
+  display: inline-flex;
+  gap: 8px;
 }
 .score {
   border-radius: 999px;
@@ -888,6 +1424,10 @@ button, .button {
   font-size: 12px;
   min-height: 24px;
   padding: 3px 8px;
+  text-decoration: none;
+}
+.tag:hover {
+  border-color: #9bb0aa;
 }
 .keyword {
   background: #fff7ed;
@@ -958,7 +1498,7 @@ button, .button {
   font-size: 13px;
   margin: 0;
 }
-.list-rows, .rule-list {
+.list-rows, .rule-list, .source-list {
   display: grid;
   gap: 10px;
 }
@@ -967,15 +1507,20 @@ button, .button {
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 10px;
 }
-.rule-card {
+.source-card, .rule-card {
   align-items: end;
   background: var(--surface);
   border: 1px solid var(--line);
   border-radius: 8px;
   display: grid;
-  grid-template-columns: minmax(140px, 1fr) minmax(220px, 1.4fr) minmax(180px, 1fr) auto;
   gap: 10px;
   padding: 12px;
+}
+.source-card {
+  grid-template-columns: minmax(140px, 1fr) minmax(150px, 0.8fr) minmax(180px, 1fr) minmax(110px, 0.6fr) auto;
+}
+.rule-card {
+  grid-template-columns: minmax(150px, 0.9fr) minmax(140px, 1fr) minmax(220px, 1.3fr) minmax(180px, 1fr) auto;
 }
 .filter-field.is-hidden {
   visibility: hidden;
@@ -1043,13 +1588,13 @@ button, .button {
   gap: 16px;
 }
 @media (max-width: 1120px) {
-  .toolbar {
+  .toolbar, .control-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
-  .rule-card {
+  .source-card, .rule-card {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
-  .rule-delete {
+  .source-delete, .rule-delete {
     grid-column: 1 / -1;
   }
   .stats {
@@ -1057,15 +1602,8 @@ button, .button {
   }
 }
 @media (max-width: 760px) {
-  .app {
-    grid-template-columns: 1fr;
-  }
-  .sidebar {
-    height: auto;
-    position: static;
-  }
-  .nav {
-    grid-template-columns: repeat(4, minmax(0, 1fr));
+  .topbar {
+    padding: 12px 18px;
   }
   .main {
     padding: 18px;
@@ -1074,10 +1612,14 @@ button, .button {
     align-items: stretch;
     flex-direction: column;
   }
-  .toolbar, .form-grid, .status-grid, .stats {
+  .toolbar, .form-grid, .status-grid, .stats, .control-grid, .run-form {
     grid-template-columns: 1fr;
   }
-  .list-row, .rule-card {
+  .refresh-status {
+    align-items: stretch;
+    flex-direction: column;
+  }
+  .list-row, .source-card, .rule-card {
     grid-template-columns: 1fr;
   }
   .filter-field.is-hidden {

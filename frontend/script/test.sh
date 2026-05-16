@@ -61,7 +61,8 @@ request() {
   echo "PASS $path -> $status"
 }
 
-request /status 200
+request /config 200
+request /status 303
 request /api/health 200
 
 echo "==> Frontend smoke tests passed"
