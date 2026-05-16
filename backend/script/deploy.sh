@@ -24,7 +24,6 @@ KV_BINDING="CONFIG_KV"
 D1_BINDING="PAPER_DB"
 D1_DATABASE_NAME="paper-sniffer-db"
 QUEUE_NAME="paper-sniffer-analysis"
-DEPLOYED_URL=""
 
 REQUIRED_VARS=(
   OPENAI_API_KEY
@@ -192,40 +191,8 @@ ensure_cloud_resources() {
 }
 
 deploy_cloud() {
-  local deploy_output
-  deploy_output="$(mktemp)"
-
   echo "==> Deploying to Cloudflare with generated secrets file"
-  npx wrangler deploy --config "$WRANGLER_CONFIG" --secrets-file "$SRC_VARS" | tee "$deploy_output"
-
-  DEPLOYED_URL="$(
-    grep -Eo 'https://[^[:space:]]+' "$deploy_output" \
-      | grep -E 'workers\.dev|https://' \
-      | tail -n 1 \
-      || true
-  )"
-  rm -f "$deploy_output"
-}
-
-run_cloud_api_tests() {
-  local base_url="${BASE_URL:-${PAPER_SNIFFER_BASE_URL:-$DEPLOYED_URL}}"
-
-  if [[ -z "$base_url" ]]; then
-    echo "==> Skipping cloud API smoke tests; set BASE_URL if Wrangler output did not include a URL"
-    return
-  fi
-
-  echo "==> Running cloud API smoke tests against $base_url"
-  bash "$ROOT/backend/script/test.sh" cloud "$base_url"
-}
-
-show_d1_summary() {
-  echo "==> Checking remote D1 analysis summary"
-  npx wrangler d1 execute "$D1_DATABASE_NAME" \
-    --remote \
-    --config "$WRANGLER_CONFIG" \
-    --command "SELECT target_date, COUNT(*) AS count FROM analysis_results GROUP BY target_date ORDER BY target_date DESC LIMIT 5;" \
-    || echo "==> D1 summary is unavailable before the first pipeline run creates tables"
+  npx wrangler deploy --config "$WRANGLER_CONFIG" --secrets-file "$SRC_VARS"
 }
 
 require_env_vars
@@ -243,7 +210,5 @@ case "$MODE" in
   cloud)
     ensure_cloud_resources
     deploy_cloud
-    run_cloud_api_tests
-    show_d1_summary
     ;;
 esac

@@ -805,7 +805,7 @@ const APP_JS = `
     if (url) {
       window.setTimeout(() => {
         window.location.href = url;
-      }, 5000);
+      }, 2000);
     }
   }
 
