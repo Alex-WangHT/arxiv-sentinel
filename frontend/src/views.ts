@@ -23,6 +23,33 @@ const CONFIG_SOURCE_TEXT: Record<string, string> = {
   default: '默认配置',
 };
 
+const DEFAULT_SYSTEM_PROMPT = `你是一位学术论文分析专家。你的任务是对给定的论文标题和摘要进行深入分析，同时评估它与给定关键词的相关度。
+
+请严格按以下 JSON 格式返回分析结果：
+{
+  "score": "HIGH|MEDIUM|LOW|IRRELEVANT",
+  "reason": "评估理由，中文，1-2 句话",
+  "core_methods": "核心技术方法，中文，说明论文使用的主要技术、算法、模型或方法论",
+  "problem": "要解决的问题，中文，清晰描述论文试图解决的核心问题或挑战",
+  "keywords": ["keyword1", "keyword2", "keyword3"]
+}
+
+相关度评分标准：
+- HIGH: 论文核心主题与关键词高度相关，是该领域的直接贡献
+- MEDIUM: 论文与关键词有一定关联，但不是核心主题
+- LOW: 论文仅边缘性地涉及关键词相关内容
+- IRRELEVANT: 论文与关键词无实质关联
+
+请仅返回 JSON 对象，不要包含其他内容。`;
+
+const DEFAULT_USER_TEMPLATE = `关键词：{keywords}
+
+论文标题：{title}
+
+论文摘要：{abstract}
+
+请对这篇论文进行综合分析，评估与关键词的相关度并提取核心信息，返回 JSON 格式的结果。`;
+
 function sourceText(source: string | undefined): string {
   return source ? CONFIG_SOURCE_TEXT[source] || source : '校验结果';
 }
@@ -201,36 +228,33 @@ function renderPaperList(results: AnalysisResultRecord[], filters: UiFilters, se
 
   return `<section class="paper-list" aria-label="论文结果">
     ${results.map(result => {
-      const href = `/${queryString(filters, { selected: result.id })}`;
       const active = selected?.id === result.id ? ' active' : '';
+      const href = active
+        ? `/${queryString(filters, { selected: '' })}`
+        : `/${queryString(filters, { selected: result.id })}`;
       return `<article class="paper-card${active}">
         <div class="paper-head">
           <span class="score ${scoreClass(result.score)}">${SCORE_TEXT[result.score]}</span>
-          <span class="muted">${escapeHtml(result.published.slice(0, 10))}</span>
+          <span class="paper-head-actions">
+            <span class="muted">${escapeHtml(result.published.slice(0, 10))}</span>
+            <a class="button secondary mini" href="${href}">${active ? '收起详情' : '查看详情'}</a>
+          </span>
         </div>
         <h2><a href="${href}">${escapeHtml(result.title)}</a></h2>
         <p>${escapeHtml(compactText(result.reason || result.abstract))}</p>
         <div class="tags">${tagList(result.categories.slice(0, 4))}</div>
         <div class="paper-meta">${escapeHtml(compactText(result.authors.join(', '), 120))}</div>
+        ${active ? renderPaperInlineDetail(result) : ''}
       </article>`;
     }).join('')}
   </section>`;
 }
 
-function renderDetail(result?: AnalysisResultRecord): string {
-  if (!result) {
-    return `<aside class="detail-panel">
-      <h2>请选择一篇论文</h2>
-      <p class="muted">打开结果后，可以查看方法、问题定义、关键词和推荐理由。</p>
-    </aside>`;
-  }
-
-  return `<aside class="detail-panel">
-    <div class="paper-head">
-      <span class="score ${scoreClass(result.score)}">${SCORE_TEXT[result.score]}</span>
+function renderPaperInlineDetail(result: AnalysisResultRecord): string {
+  return `<div class="paper-card-detail">
+    <div class="detail-actions">
       <a class="button secondary" href="${escapeAttr(result.paper_url)}" target="_blank" rel="noreferrer">打开论文</a>
     </div>
-    <h2>${escapeHtml(result.title)}</h2>
     <dl class="details">
       <dt>作者</dt>
       <dd>${escapeHtml(result.authors.join(', ') || '未知')}</dd>
@@ -249,7 +273,7 @@ function renderDetail(result?: AnalysisResultRecord): string {
       <dt>摘要</dt>
       <dd>${escapeHtml(result.abstract)}</dd>
     </dl>
-  </aside>`;
+  </div>`;
 }
 
 export function renderDashboardPage(options: {
@@ -269,10 +293,7 @@ export function renderDashboardPage(options: {
   </header>
   ${renderDashboardToolbar(options.filters)}
   ${renderStats(options.results, options.totalCount)}
-  <div class="split">
-    ${renderPaperList(options.results, options.filters, options.selected)}
-    ${renderDetail(options.selected)}
-  </div>`;
+  ${renderPaperList(options.results, options.filters, options.selected)}`;
 
   return pageShell({
     title: 'PaperSniffer 论文雷达',
@@ -355,6 +376,9 @@ function renderDomainRuleRows(rules: EditableConfig['domain_rules']): string {
 }
 
 function renderConfigForm(config: EditableConfig): string {
+  const systemPrompt = configText(config, 'prompt_system') || DEFAULT_SYSTEM_PROMPT;
+  const userPromptTemplate = configText(config, 'prompt_user_template') || DEFAULT_USER_TEMPLATE;
+
   return `<form class="form-grid" method="post">
     ${renderKeywordRows(config.keywords || [])}
     ${renderDomainRuleRows(config.domain_rules || [])}
@@ -386,25 +410,13 @@ function renderConfigForm(config: EditableConfig): string {
         ${['DEBUG', 'INFO', 'WARNING', 'ERROR'].map(level => `<option value="${level}" ${config.log_level === level ? 'selected' : ''}>${level}</option>`).join('')}
       </select>
     </label>
-    <label>
-      <span>输出目录</span>
-      <input name="output_dir" value="${escapeAttr(configText(config, 'output_dir'))}">
-    </label>
-    <label>
-      <span>提示词目录</span>
-      <input name="prompts_dir" value="${escapeAttr(configText(config, 'prompts_dir'))}">
-    </label>
-    <label>
-      <span>历史文件名</span>
-      <input name="history_file" value="${escapeAttr(configText(config, 'history_file'))}">
-    </label>
     <label class="wide">
       <span>系统提示词</span>
-      <textarea name="prompt_system" rows="5">${escapeHtml(configText(config, 'prompt_system'))}</textarea>
+      <textarea name="prompt_system" rows="14">${escapeHtml(systemPrompt)}</textarea>
     </label>
     <label class="wide">
       <span>用户提示词模板</span>
-      <textarea name="prompt_user_template" rows="6">${escapeHtml(configText(config, 'prompt_user_template'))}</textarea>
+      <textarea name="prompt_user_template" rows="8">${escapeHtml(userPromptTemplate)}</textarea>
     </label>
     <div class="actions wide">
       <button formaction="/config/validate" type="submit">校验配置</button>
@@ -821,12 +833,6 @@ button, .button {
 .stats strong, .stats span { display: block; }
 .stats strong { font-size: 24px; }
 .stats span { color: var(--muted); font-size: 12px; margin-top: 4px; }
-.split {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(340px, 420px);
-  gap: 16px;
-  align-items: start;
-}
 .paper-list {
   display: grid;
   gap: 10px;
@@ -892,15 +898,15 @@ button, .button {
   font-size: 13px;
   margin-top: 10px;
 }
-.detail-panel {
-  background: var(--surface);
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  max-height: calc(100vh - 56px);
-  overflow: auto;
-  padding: 18px;
-  position: sticky;
-  top: 28px;
+.paper-card-detail {
+  border-top: 1px solid var(--line);
+  margin-top: 14px;
+  padding-top: 14px;
+}
+.detail-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: 12px;
 }
 .details {
   display: grid;
@@ -1048,13 +1054,6 @@ button, .button {
   }
   .stats {
     grid-template-columns: repeat(3, minmax(0, 1fr));
-  }
-  .split {
-    grid-template-columns: 1fr;
-  }
-  .detail-panel {
-    max-height: none;
-    position: static;
   }
 }
 @media (max-width: 760px) {

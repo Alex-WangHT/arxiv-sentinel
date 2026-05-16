@@ -121,14 +121,11 @@ function filterResults(results: AnalysisResultRecord[], filters: UiFilters): Ana
 }
 
 function pickSelected(results: AnalysisResultRecord[], selectedId: string): AnalysisResultRecord | undefined {
-  if (selectedId) {
-    const selected = results.find(result => result.id === selectedId);
-    if (selected) {
-      return selected;
-    }
+  if (!selectedId) {
+    return undefined;
   }
 
-  return results[0];
+  return results.find(result => result.id === selectedId);
 }
 
 function markdownEscape(value: string): string {
@@ -264,10 +261,7 @@ async function parseConfigForm(request: Request): Promise<EditableConfig> {
     openai_base_url: optionalString(form, 'openai_base_url'),
     max_results_per_category: optionalNumber(form, 'max_results_per_category'),
     max_concurrent_requests: optionalNumber(form, 'max_concurrent_requests'),
-    output_dir: optionalString(form, 'output_dir'),
-    prompts_dir: optionalString(form, 'prompts_dir'),
     log_level: logLevel,
-    history_file: optionalString(form, 'history_file'),
     prompt_system: optionalString(form, 'prompt_system'),
     prompt_user_template: optionalString(form, 'prompt_user_template'),
   };
