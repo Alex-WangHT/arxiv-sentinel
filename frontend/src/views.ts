@@ -617,7 +617,7 @@ function renderConfigForm(config: EditableConfig): string {
     </label>
     <label>
       <span>最大并发请求</span>
-      <input type="number" min="1" max="50" name="max_concurrent_requests" value="${escapeAttr(configText(config, 'max_concurrent_requests'))}">
+      <input type="number" min="1" max="500" name="max_concurrent_requests" value="${escapeAttr(configText(config, 'max_concurrent_requests'))}">
     </label>
     <label>
       <span>日志等级</span>
