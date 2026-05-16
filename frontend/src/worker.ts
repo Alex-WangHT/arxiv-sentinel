@@ -351,6 +351,12 @@ async function handleDashboard(
       ? (await client.runStatus(filters.date).catch(() => undefined))?.run || undefined
       : undefined;
     const isActiveRun = latestRun && (latestRun.status === 'queued' || latestRun.status === 'running');
+    const hideResults = refresh.ensure || refresh.running;
+    const displayResults = hideResults ? [] : results;
+    const displayTotalCount = hideResults ? 0 : allResults.length;
+    const displayFocusTotal = hideResults ? 0 : focusTotal;
+    const displaySelected = hideResults ? undefined : selected;
+    const displayKeywordFacets = hideResults ? [] : keywordFacets;
 
     const shouldStartRun = refresh.ensure && !refresh.running && !isActiveRun;
     if (shouldStartRun) {
@@ -414,11 +420,11 @@ async function handleDashboard(
 
     return htmlResponse(renderDashboardPage({
       filters,
-      results,
-      totalCount: allResults.length,
-      focusTotal,
-      selected,
-      keywordFacets,
+      results: displayResults,
+      totalCount: displayTotalCount,
+      focusTotal: displayFocusTotal,
+      selected: displaySelected,
+      keywordFacets: displayKeywordFacets,
       runResponse: options.runResponse,
       refreshState,
       flash,

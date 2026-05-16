@@ -196,7 +196,6 @@ function renderDashboardToolbar(filters: UiFilters, refreshState?: DashboardRefr
     : '';
 
   return `<form class="toolbar" method="get" action="/">
-    <input type="hidden" name="ensure" value="1">
     ${runningFields}
     <input type="hidden" name="view" value="${escapeAttr(filters.view)}">
     <label>
@@ -215,9 +214,8 @@ function renderDashboardToolbar(filters: UiFilters, refreshState?: DashboardRefr
       <span>结果关键词</span>
       <input name="keyword" value="${escapeAttr(filters.keyword)}" placeholder="agent">
     </label>
-    <button type="submit">刷新</button>
-    <a class="button secondary" href="${exportMd}">导出 Markdown</a>
-    <a class="button secondary" href="${exportJson}">导出 JSON</a>
+    <button type="submit">查询</button>
+    <button type="submit" name="ensure" value="1">刷新</button>
   </form>`;
 }
 
