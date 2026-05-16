@@ -15,43 +15,61 @@ Cloudflare Cron Trigger
 
 也就是说，后台任务会按 `wrangler.toml` 里的 Cron 自动启动，不需要前端或 HTTP 请求启动。`POST /run` 只保留为管理员手动调试入口。
 
-## 1. 登录 Cloudflare
+HTTP 接口的完整说明见 [api.md](./api.md)。
+
+## 1. 一键云端部署
+
+`script/deploy.sh cloud` 已经包含本文档原来的 Cloudflare 部署流程。它不读取现成 `.dev.vars`，必须从 shell 环境变量生成。
+
+PowerShell：
 
 ```powershell
-npx.cmd wrangler login
+$env:OPENAI_API_KEY = "sk-your-real-key"
+$env:ADMIN_TOKEN = "your-admin-token"
+npm.cmd run deploy:cloud
 ```
 
-确认账号：
+Git Bash：
+
+```bash
+OPENAI_API_KEY=sk-your-real-key ADMIN_TOKEN=your-admin-token bash script/deploy.sh cloud
+```
+
+## 2. Cloud 分支会执行什么
+
+`deploy.sh cloud` 会按顺序执行：
+
+1. 校验 `OPENAI_API_KEY`、`ADMIN_TOKEN` 必须来自 shell 环境变量。
+2. 生成 `script/config/.dev.vars`，并同步到 `backend/.dev.vars`。
+3. 运行 `npm run typecheck` 和 `npm run build`。
+4. 检查 Cloudflare 登录状态；未登录时启动 `wrangler login`。
+5. 确认 KV namespace `CONFIG_KV`；如果 `wrangler.toml` 里没有有效 `id`，创建并自动更新配置。
+6. 确认 Queue `paper-sniffer-analysis`；不存在则创建。
+7. 确认 D1 database `paper-sniffer-db`；如果 `wrangler.toml` 里没有有效 `database_id`，创建并自动更新配置。
+8. 确认 Cron 配置为 `0 1 * * *`，即北京时间每天 `09:00`。
+9. 使用生成的 `.dev.vars` 作为 `--secrets-file` 执行 `wrangler deploy`。
+10. 部署成功后尽量从 Wrangler 输出中解析 Worker URL，并运行云端 API smoke test。
+11. 查询远端 D1 分析结果摘要；首次运行前表可能还没创建，此步骤失败不会中断部署。
+
+如果使用自定义域名，或 Wrangler 输出中没有解析到 URL，可以显式传入：
 
 ```powershell
-npx.cmd wrangler whoami
+$env:BASE_URL = "https://your-domain.example.com"
+npm.cmd run deploy:cloud
 ```
 
-## 2. 创建或确认 KV
+## 3. Wrangler 配置要求
 
-如果还没有 KV namespace：
-
-```powershell
-npx.cmd wrangler kv namespace create CONFIG_KV --config backend/wrangler.toml
-```
-
-把输出里的 `id` 填到 [wrangler.toml](../backend/wrangler.toml)：
+[wrangler.toml](../backend/wrangler.toml) 中应保留这些绑定名：
 
 ```toml
 [[kv_namespaces]]
 binding = "CONFIG_KV"
-id = "你的_KV_ID"
-```
 
-## 3. 创建或确认 Queue
+[[d1_databases]]
+binding = "PAPER_DB"
+database_name = "paper-sniffer-db"
 
-```powershell
-npx.cmd wrangler queues create paper-sniffer-analysis --config backend/wrangler.toml
-```
-
-[wrangler.toml](../backend/wrangler.toml) 中应保留：
-
-```toml
 [[queues.producers]]
 binding = "PAPER_ANALYSIS_QUEUE"
 queue = "paper-sniffer-analysis"
@@ -60,157 +78,16 @@ queue = "paper-sniffer-analysis"
 queue = "paper-sniffer-analysis"
 max_batch_size = 1
 max_batch_timeout = 30
-```
 
-## 4. 创建或确认 D1
-
-如果还没有 D1 database：
-
-```powershell
-npx.cmd wrangler d1 create paper-sniffer-db --config backend/wrangler.toml
-```
-
-把输出里的 `database_id` 填到 [wrangler.toml](../backend/wrangler.toml)，绑定名必须是 `PAPER_DB`：
-
-```toml
-[[d1_databases]]
-binding = "PAPER_DB"
-database_name = "paper-sniffer-db"
-database_id = "你的_D1_DATABASE_ID"
-```
-
-D1 表结构由 Worker 首次运行时自动创建，不需要单独执行 SQL migration。
-
-## 5. 确认 Cron
-
-[wrangler.toml](../backend/wrangler.toml) 里已经配置：
-
-```toml
 [triggers]
 crons = ["0 1 * * *"]
 ```
 
-Cloudflare Cron 使用 UTC 时间。这个配置表示每天 `01:00 UTC` 自动触发，也就是北京时间每天 `09:00`。
+如果 KV 的 `id` 或 D1 的 `database_id` 为空/占位，`deploy.sh cloud` 会调用 Wrangler 创建资源并使用 `--update-config` 写回配置。
 
-## 6. 配置线上 Secret
+## 4. 部署后验证
 
-```powershell
-npx.cmd wrangler secret put OPENAI_API_KEY --config backend/wrangler.toml
-npx.cmd wrangler secret put ADMIN_TOKEN --config backend/wrangler.toml
-```
-
-`OPENAI_API_KEY` 不要写入 KV。`ADMIN_TOKEN` 用于保护配置管理接口和手动调试入口。
-
-## 7. 本地检查
-
-```powershell
-npm.cmd run typecheck
-npm.cmd run build
-```
-
-本地模拟 Cron：
-
-```powershell
-npm.cmd run dev:scheduled
-```
-
-然后访问：
-
-```text
-http://127.0.0.1:8787/__scheduled
-```
-
-这会触发 `scheduled()`，用于验证自动任务路径。它是本地模拟，不是线上启动方式。
-
-## 8. 部署
-
-```powershell
-npm.cmd run deploy
-```
-
-部署成功后，Wrangler 会输出 Worker 地址，通常类似：
-
-```text
-https://paper-sniffer-backend.<你的账号>.workers.dev
-```
-
-下面示例用 `$BASE` 保存这个地址：
-
-```powershell
-$BASE = "https://paper-sniffer-backend.<你的账号>.workers.dev"
-$TOKEN = "你的_ADMIN_TOKEN"
-```
-
-## 9. 线上配置测试
-
-健康检查只验证 Worker 可访问，不会启动后台任务：
-
-```powershell
-Invoke-WebRequest "$BASE/health" -UseBasicParsing
-```
-
-读取当前配置：
-
-```powershell
-Invoke-WebRequest "$BASE/api/config" `
-  -Headers @{ Authorization = "Bearer $TOKEN" } `
-  -UseBasicParsing
-```
-
-校验配置：
-
-```powershell
-$body = @{
-  keywords = @("large language model", "agent", "reasoning")
-  domain_rules = @(
-    @{
-      category = "cs.RO"
-      mode = "accept_all"
-      filter_categories = @()
-    },
-    @{
-      category = "cs.CV"
-      mode = "categories_filter"
-      filter_categories = @("cs.AI", "cs.CL", "cs.RO", "cs.LG")
-    }
-  )
-  relevance_threshold = "MEDIUM"
-  openai_model = "deepseek-v4-flash"
-  openai_base_url = "https://api.deepseek.com/v1"
-  max_results_per_category = 5
-  max_concurrent_requests = 3
-  output_dir = "output"
-  prompts_dir = "prompts"
-  log_level = "INFO"
-  history_file = "history.json"
-} | ConvertTo-Json -Depth 20
-
-Invoke-WebRequest "$BASE/api/config/validate" `
-  -Method POST `
-  -Headers @{
-    Authorization = "Bearer $TOKEN"
-    "Content-Type" = "application/json"
-  } `
-  -Body $body `
-  -UseBasicParsing
-```
-
-保存配置到 KV：
-
-```powershell
-Invoke-WebRequest "$BASE/api/config" `
-  -Method PUT `
-  -Headers @{
-    Authorization = "Bearer $TOKEN"
-    "Content-Type" = "application/json"
-  } `
-  -Body $body `
-  -UseBasicParsing
-```
-
-## 10. 线上自动任务验证
-
-部署后，等待下一个 Cron 时间点。当前配置会在北京时间每天 `09:00` 自动触发。
+部署脚本会自动运行 `script/test.sh cloud`。它测试健康检查、鉴权、配置读取/校验、分析结果查询等轻量接口，不会触发 `/run`，也不会发起真实论文分析。
 
 查看线上日志：
 
@@ -225,7 +102,7 @@ Scheduled run triggered by cron: 0 1 * * *
 Scheduled run enqueued
 ```
 
-任务完成后，可以查 D1：
+任务完成后，也可以手动查 D1：
 
 ```powershell
 npx.cmd wrangler d1 execute paper-sniffer-db `
@@ -234,13 +111,14 @@ npx.cmd wrangler d1 execute paper-sniffer-db `
   --command "SELECT target_date, COUNT(*) AS count FROM analysis_results GROUP BY target_date ORDER BY target_date DESC LIMIT 5;"
 ```
 
-如果 Queue 没有绑定，日志会显示 `PAPER_ANALYSIS_QUEUE 未绑定`，然后 Worker 会直接在 `scheduled()` 里执行 Pipeline。线上建议绑定 Queue。
+## 5. 管理员手动调试
 
-## 11. 管理员手动调试
-
-这个接口不是正式启动方式，只用于你临时验证 Pipeline：
+这个接口不是正式启动方式，只用于临时验证 Pipeline：
 
 ```powershell
+$BASE = "https://paper-sniffer-backend.<你的账号>.workers.dev"
+$TOKEN = "你的_ADMIN_TOKEN"
+
 Invoke-WebRequest "$BASE/run?sync=true&date=2026-05-12" `
   -Method POST `
   -Headers @{ Authorization = "Bearer $TOKEN" } `
@@ -249,12 +127,14 @@ Invoke-WebRequest "$BASE/run?sync=true&date=2026-05-12" `
 
 不带 `ADMIN_TOKEN` 会返回 `401`。普通 `GET /run` 不会启动任务。
 
-## 12. 常见错误
+## 6. 常见错误
 
 `Queue "paper-sniffer-analysis" does not exist`:
 
+重新运行：
+
 ```powershell
-npx.cmd wrangler queues create paper-sniffer-analysis --config backend/wrangler.toml
+npm.cmd run deploy:cloud
 ```
 
 `未绑定 PAPER_DB D1，分析结果不会持久化`:
@@ -263,4 +143,4 @@ npx.cmd wrangler queues create paper-sniffer-analysis --config backend/wrangler.
 
 `CONFIG_KV 中没有找到配置`:
 
-这是正常兜底行为。第一次部署后，通过 `PUT /api/config` 保存配置即可。
+这是正常兜底行为。第一次部署后，Worker 会使用内置默认配置；需要修改运行参数时，通过 `PUT /api/config` 保存到 KV。

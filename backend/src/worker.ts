@@ -3,6 +3,8 @@ import {
   Pipeline,
   PipelineStorage,
   SerializedAnalysisResult,
+  type AnalysisResultRecord,
+  type AnalysisResultsQuery,
 } from './pipeline';
 
 const DEFAULT_CONFIG: Record<string, unknown> = {
@@ -66,6 +68,58 @@ interface StoredConfig {
   config: Record<string, unknown>;
 }
 
+interface AnalysisResultsDbRow {
+  id: number;
+  target_date: string;
+  paper_id: string;
+  title: string;
+  abstract: string;
+  authors_json: string;
+  categories_json: string;
+  paper_url: string;
+  published: string;
+  score: string;
+  reason: string;
+  core_methods: string;
+  problem: string;
+  keywords_json: string;
+  created_at: string;
+  updated_at: string;
+}
+
+function parseJsonStringArray(json: string): string[] {
+  try {
+    const value = JSON.parse(json) as unknown;
+    if (!Array.isArray(value)) {
+      return [];
+    }
+    return value.filter((item): item is string => typeof item === 'string');
+  } catch {
+    return [];
+  }
+}
+
+function mapAnalysisResultRow(row: AnalysisResultsDbRow): AnalysisResultRecord {
+  return {
+    record_id: row.id,
+    target_date: row.target_date,
+    id: row.paper_id, // 这里的 id 映射自数据库的 paper_id
+    title: row.title,
+    abstract: row.abstract,
+    authors: parseJsonStringArray(row.authors_json),
+    categories: parseJsonStringArray(row.categories_json),
+    paper_url: row.paper_url,
+    published: row.published,
+    score: row.score,
+    reason: row.reason,
+    core_methods: row.core_methods,
+    problem: row.problem,
+    keywords: parseJsonStringArray(row.keywords_json),
+    created_at: row.created_at,
+    updated_at: row.updated_at,
+  };
+}
+
 // WorkerD1Storage 是 PipelineStorage 的 Cloudflare D1 实现。
 // paper_analyzer 的输出是结构化字段，适合落到 SQL 表里，之后可以按日期、score、分类等查询。
 class WorkerD1Storage implements PipelineStorage {
@@ -83,11 +137,11 @@ class WorkerD1Storage implements PipelineStorage {
 
     try {
       const result = await this.db
-        .prepare('SELECT arxiv_id FROM processed_papers ORDER BY processed_at DESC')
-        .all<{ arxiv_id: string }>();
+        .prepare('SELECT paper_id FROM processed_papers ORDER BY processed_at DESC')
+        .all<{ paper_id: string }>();
 
       return (result.results || [])
-        .map(row => row.arxiv_id)
+        .map(row => row.paper_id)
         .filter(Boolean);
     } catch (error) {
       console.warn(`读取历史记录失败，将使用空历史: ${(error as Error).message}`);
@@ -112,12 +166,12 @@ class WorkerD1Storage implements PipelineStorage {
       await this.db.prepare(`
         INSERT INTO analysis_results (
           target_date,
-          arxiv_id,
+          paper_id,
           title,
           abstract,
           authors_json,
           categories_json,
-          pdf_url,
+          paper_url,
           published,
           score,
           reason,
@@ -128,12 +182,12 @@ class WorkerD1Storage implements PipelineStorage {
           updated_at
         )
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(target_date, arxiv_id) DO UPDATE SET
+        ON CONFLICT(target_date, paper_id) DO UPDATE SET
           title = excluded.title,
           abstract = excluded.abstract,
           authors_json = excluded.authors_json,
           categories_json = excluded.categories_json,
-          pdf_url = excluded.pdf_url,
+          paper_url = excluded.paper_url,
           published = excluded.published,
           score = excluded.score,
           reason = excluded.reason,
@@ -143,12 +197,12 @@ class WorkerD1Storage implements PipelineStorage {
           updated_at = excluded.updated_at
       `).bind(
         targetDate,
-        result.arxiv_id,
+        result.id,
         result.title,
         result.abstract,
         JSON.stringify(result.authors),
         JSON.stringify(result.categories),
-        result.pdf_url,
+        result.paper_url,
         result.published,
         result.score,
         result.reason,
@@ -163,7 +217,27 @@ class WorkerD1Storage implements PipelineStorage {
     return `d1://analysis_results?target_date=${targetDate}&count=${results.length}`;
   }
 
-  async saveHistory(_historyKey: string, ids: string[]): Promise<void> {
+  async listAnalysisResults(query: AnalysisResultsQuery): Promise<AnalysisResultRecord[]> {
+    if (!this.db) {
+      return [];
+    }
+
+    await this.ensureSchema();
+
+    const sql = `
+      SELECT id, target_date, paper_id, title, abstract, authors_json, categories_json,
+             paper_url, published, score, reason, core_methods, problem, keywords_json,
+             created_at, updated_at
+      FROM analysis_results
+      WHERE target_date = ?
+      ORDER BY updated_at DESC
+    `;
+
+    const { results } = await this.db.prepare(sql).bind(query.target_date).all<AnalysisResultsDbRow>();
+    return (results || []).map(mapAnalysisResultRow);
+  }
+
+  async saveHistory(_historyKey: string, ids: string[], _config: Config): Promise<void> {
     if (!this.db) {
       return;
     }
@@ -173,9 +247,9 @@ class WorkerD1Storage implements PipelineStorage {
     const processedAt = new Date().toISOString();
     for (const id of ids) {
       await this.db.prepare(`
-        INSERT INTO processed_papers (arxiv_id, processed_at)
+        INSERT INTO processed_papers (paper_id, processed_at)
         VALUES (?, ?)
-        ON CONFLICT(arxiv_id) DO UPDATE SET processed_at = excluded.processed_at
+        ON CONFLICT(paper_id) DO UPDATE SET processed_at = excluded.processed_at
       `).bind(id, processedAt).run();
     }
   }
@@ -186,16 +260,31 @@ class WorkerD1Storage implements PipelineStorage {
     }
 
     if (!this.schemaReady) {
-      this.schemaReady = this.db.exec(`
+      this.schemaReady = this.createSchema().catch(error => {
+        this.schemaReady = undefined;
+        throw error;
+      });
+    }
+
+    await this.schemaReady;
+  }
+
+  private async createSchema(): Promise<void> {
+    if (!this.db) {
+      return;
+    }
+
+    const statements = [
+      `
         CREATE TABLE IF NOT EXISTS analysis_results (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
           target_date TEXT NOT NULL,
-          arxiv_id TEXT NOT NULL,
+          paper_id TEXT NOT NULL,
           title TEXT NOT NULL,
           abstract TEXT NOT NULL,
           authors_json TEXT NOT NULL,
           categories_json TEXT NOT NULL,
-          pdf_url TEXT NOT NULL,
+          paper_url TEXT NOT NULL,
           published TEXT NOT NULL,
           score TEXT NOT NULL,
           reason TEXT NOT NULL,
@@ -204,23 +293,28 @@ class WorkerD1Storage implements PipelineStorage {
           keywords_json TEXT NOT NULL,
           created_at TEXT NOT NULL,
           updated_at TEXT NOT NULL,
-          UNIQUE(target_date, arxiv_id)
-        );
-
+          UNIQUE(target_date, paper_id)
+        )
+      `,
+      `
         CREATE INDEX IF NOT EXISTS idx_analysis_results_target_date
-          ON analysis_results(target_date);
-
+          ON analysis_results(target_date)
+      `,
+      `
         CREATE INDEX IF NOT EXISTS idx_analysis_results_score
-          ON analysis_results(score);
-
+          ON analysis_results(score)
+      `,
+      `
         CREATE TABLE IF NOT EXISTS processed_papers (
-          arxiv_id TEXT PRIMARY KEY,
+          paper_id TEXT PRIMARY KEY,
           processed_at TEXT NOT NULL
-        );
-      `).then(() => undefined);
-    }
+        )
+      `,
+    ];
 
-    await this.schemaReady;
+    for (const statement of statements) {
+      await this.db.prepare(statement).run();
+    }
   }
 }
 
@@ -417,7 +511,7 @@ function jsonResponse(data: unknown, init: ResponseInit = {}): Response {
   headers.set('content-type', 'application/json; charset=utf-8');
   headers.set('access-control-allow-origin', '*');
   headers.set('access-control-allow-methods', 'GET,POST,PUT,OPTIONS');
-  headers.set('access-control-allow-headers', 'content-type, authorization, x-admin-token');
+  headers.set('access-control-allow-headers', 'content-type, authorization');
 
   return new Response(JSON.stringify(data, null, 2), {
     ...init,
@@ -426,12 +520,13 @@ function jsonResponse(data: unknown, init: ResponseInit = {}): Response {
 }
 
 // Queue 消息里只需要保存 YYYY-MM-DD，不需要保存完整 Date 对象。
+// 与所有受保护 HTTP 路由一致：仅接受 Authorization: Bearer <ADMIN_TOKEN>。
 function getAdminToken(request: Request): string {
   const authorization = request.headers.get('authorization') || '';
   if (authorization.toLowerCase().startsWith('bearer ')) {
     return authorization.slice(7).trim();
   }
-  return request.headers.get('x-admin-token') || '';
+  return '';
 }
 
 function assertAdmin(request: Request, env: Env): Response | undefined {
@@ -554,6 +649,55 @@ function formatDate(date?: Date): string | undefined {
   return `${year}-${month}-${day}`;
 }
 
+async function handleAnalysisResultsRequest(request: Request, env: Env): Promise<Response> {
+  const unauthorized = assertAdmin(request, env);
+  if (unauthorized) {
+    return unauthorized;
+  }
+
+  if (request.method !== 'GET') {
+    return jsonResponse(
+      {
+        ok: false,
+        error: 'Method not allowed',
+      },
+      { status: 405 },
+    );
+  }
+
+  const url = new URL(request.url);
+  const targetDateRaw = url.searchParams.get('target_date')?.trim();
+  if (!targetDateRaw) {
+    return jsonResponse(
+      {
+        ok: false,
+        error: '必须提供查询参数 target_date（YYYY-MM-DD）',
+      },
+      { status: 400 },
+    );
+  }
+
+  try {
+    parseTargetDate(targetDateRaw);
+  } catch (error) {
+    return jsonResponse(
+      {
+        ok: false,
+        error: (error as Error).message,
+      },
+      { status: 400 },
+    );
+  }
+
+  const storage = new WorkerD1Storage(env.PAPER_DB);
+  const results = await storage.listAnalysisResults({ target_date: targetDateRaw });
+
+  return jsonResponse({
+    ok: true,
+    results,
+  });
+}
+
 // /run 是管理员手动调试入口，不是后台任务的常规启动方式。
 // 线上常规执行由 scheduled() 通过 Cron Trigger 自动启动。
 async function handleRunRequest(request: Request, env: Env): Promise<Response> {
@@ -610,9 +754,10 @@ async function handleRunRequest(request: Request, env: Env): Promise<Response> {
 
 export default {
   // HTTP 入口。
-  // 常用路由：
+  // 常用路由（除 OPTIONS 预检外，均需 Authorization: Bearer <ADMIN_TOKEN>）：
   // - GET /health: 检查服务是否活着
   // - GET /config: 查看脱敏后的配置
+  // - GET /api/analysis-results: 分页读取 D1 analysis_results
   // - POST /run: 管理员手动调试入口
   // - POST /run?sync=true: 管理员同步调试入口
   async fetch(request: Request, env: Env): Promise<Response> {
@@ -624,6 +769,10 @@ export default {
 
     try {
       if (url.pathname === '/health') {
+        const unauthorized = assertAdmin(request, env);
+        if (unauthorized) {
+          return unauthorized;
+        }
         return jsonResponse({ ok: true, service: 'PaperSniffer', runtime: 'cloudflare-workers' });
       }
 
@@ -636,7 +785,15 @@ export default {
       }
 
       if (url.pathname === '/config') {
+        const unauthorized = assertAdmin(request, env);
+        if (unauthorized) {
+          return unauthorized;
+        }
         return jsonResponse((await loadConfig(env)).toSafeJSON());
+      }
+
+      if (url.pathname === '/api/analysis-results') {
+        return await handleAnalysisResultsRequest(request, env);
       }
 
       if (url.pathname === '/run') {
@@ -648,13 +805,14 @@ export default {
           ok: false,
           message: 'Not found',
           routes: [
-            'GET /health',
-            'GET /config',
-            'GET /api/config',
-            'PUT /api/config',
-            'POST /api/config/validate',
-            'POST /run (admin manual only)',
-            'POST /run?sync=true (admin manual only)',
+            'GET /health (requires ADMIN_TOKEN)',
+            'GET /config (requires ADMIN_TOKEN)',
+            'GET /api/analysis-results (requires ADMIN_TOKEN)',
+            'GET /api/config (requires ADMIN_TOKEN)',
+            'PUT /api/config (requires ADMIN_TOKEN)',
+            'POST /api/config/validate (requires ADMIN_TOKEN)',
+            'POST /run (requires ADMIN_TOKEN)',
+            'POST /run?sync=true (requires ADMIN_TOKEN)',
           ],
         },
         { status: 404 },

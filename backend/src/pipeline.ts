@@ -2,36 +2,46 @@ import { Config } from './config';
 import { LlmClient } from './llm_client';
 import { PaperAnalyzer } from './paper_analyzer';
 import { ArxivSniffer } from './arxiv_sniffer';
-import { AnalysisResult, Paper, PipelineResult } from './models';
+import { AnalysisResult, Paper, PipelineResult, PaperSniffer } from './models';
 
 /*
  * Pipeline 是业务流程的总调度器。
  *
  * 它把整个任务拆成四步：
- * 1. 从 arXiv 抓论文；
- * 2. 用 LLM 分析论文；
- * 3. 保存分析结果；
- * 4. 更新已处理历史。
- *
- * 为了适配 Cloudflare Workers，这里不再直接 fs.writeFileSync 写本地文件，
- * 而是通过 PipelineStorage 接口把“保存到哪里”交给外部实现。
+ * 1. 从各数据源 (arXiv 等) 嗅探论文；
+ * 2. 对新论文进行去重和历史过滤；
+ * 3. 用 LLM 分析论文；
+ * 4. 保存分析结果并更新已处理历史。
  */
 
 // 保存结果时不直接保存完整 AnalysisResult，是因为 AnalysisResult 里嵌套了 paper。
 // 这里把它拍平成更适合 JSON 存储和前端读取的结构。
 export interface SerializedAnalysisResult {
-  arxiv_id: string;
+  id: string;
   title: string;
   abstract: string;
   authors: string[];
   categories: string[];
-  pdf_url: string;
+  paper_url: string;
   published: string;
   score: string;
   reason: string;
   core_methods: string;
   problem: string;
   keywords: string[];
+}
+
+/** HTTP `GET /api/analysis-results` 查询参数，与 D1 `analysis_results` 表对应。须提供 `YYYY-MM-DD` 的 `target_date`。 */
+export interface AnalysisResultsQuery {
+  target_date: string;
+}
+
+/** D1 中一行分析结果（在 SerializedAnalysisResult 基础上带主键与审计字段）。 */
+export interface AnalysisResultRecord extends SerializedAnalysisResult {
+  record_id: number;
+  target_date: string;
+  created_at: string;
+  updated_at: string;
 }
 
 // 存储接口：Pipeline 只管调用这些方法，不关心底层是 D1、本地内存，还是未来的其他数据库。
@@ -43,6 +53,8 @@ export interface PipelineStorage {
     config: Config,
   ): Promise<string>;
   saveHistory(historyKey: string, ids: string[], config: Config): Promise<void>;
+  /** 读取已持久化的分析结果；无后端存储时返回空数组。 */
+  listAnalysisResults(query: AnalysisResultsQuery): Promise<AnalysisResultRecord[]>;
 }
 
 // 内存存储主要用于本地测试或没有绑定 D1 的情况。
@@ -50,6 +62,7 @@ export interface PipelineStorage {
 export class MemoryPipelineStorage implements PipelineStorage {
   private history: string[] = [];
   private lastResults: SerializedAnalysisResult[] = [];
+  private lastTargetDate = '';
 
   async loadHistory(): Promise<string[]> {
     return [...this.history];
@@ -61,11 +74,25 @@ export class MemoryPipelineStorage implements PipelineStorage {
     config: Config,
   ): Promise<string> {
     this.lastResults = results;
+    this.lastTargetDate = targetDate;
     return `memory://${config.output_dir}/analysis_results_${targetDate}.json`;
   }
 
-  async saveHistory(_historyKey: string, ids: string[]): Promise<void> {
+  async saveHistory(_historyKey: string, ids: string[], _config: Config): Promise<void> {
     this.history = [...ids];
+  }
+
+  async listAnalysisResults(query: AnalysisResultsQuery): Promise<AnalysisResultRecord[]> {
+    if (query.target_date !== this.lastTargetDate) {
+      return [];
+    }
+    return this.lastResults.map((row, i) => ({
+      ...row,
+      record_id: i + 1,
+      target_date: this.lastTargetDate,
+      created_at: '',
+      updated_at: '',
+    }));
   }
 
   getLastResults(): SerializedAnalysisResult[] {
@@ -78,6 +105,7 @@ export class Pipeline {
   private llmClient: LlmClient;
   private analyzer: PaperAnalyzer;
   private storage: PipelineStorage;
+  private sniffers: PaperSniffer[] = [];
 
   constructor(config: Config, storage: PipelineStorage = new MemoryPipelineStorage()) {
     this.config = config;
@@ -102,17 +130,48 @@ export class Pipeline {
         userTemplate: config.prompt_user_template,
       },
     );
+
+    // 默认注册 arXiv 嗅探器
+    this.registerSniffer(new ArxivSniffer(
+      config.domain_rules,
+      config.max_results_per_category,
+    ));
   }
 
-  // 第一步：根据配置里的 domain_rules 去 arXiv 拉论文。
+  /** 注册新的论文嗅探器（如未来的 Semantic Scholar） */
+  registerSniffer(sniffer: PaperSniffer): void {
+    this.sniffers.push(sniffer);
+  }
+
+  // 第一步：从所有注册的嗅探器中获取论文，并进行去重和历史过滤。
   async sniffPapers(targetDate?: Date): Promise<Paper[]> {
-    const sniffer = new ArxivSniffer(
-      this.config.domain_rules,
-      this.config.max_results_per_category,
-      this.config.processed_ids,
-      targetDate,
-    );
-    return await sniffer.sniffAsync();
+    let allPapers: Paper[] = [];
+
+    for (const sniffer of this.sniffers) {
+      try {
+        const papers = await sniffer.sniff(targetDate);
+        allPapers = allPapers.concat(papers);
+      } catch (error) {
+        console.error(`嗅探器 ${sniffer.name} 运行失败: ${(error as Error).message}`);
+      }
+    }
+
+    // 1. 全局去重（防止不同数据源抓到同一篇论文）
+    const seenIds = new Set<string>();
+    const deduped: Paper[] = [];
+    for (const paper of allPapers) {
+      if (!seenIds.has(paper.id)) {
+        seenIds.add(paper.id);
+        deduped.push(paper);
+      }
+    }
+
+    // 2. 历史过滤（排除已经处理过的论文）
+    const processedIds = new Set(this.config.processed_ids);
+    const newPapers = deduped.filter(paper => !processedIds.has(paper.id));
+
+    console.info(`嗅探完成: 原始总数=${allPapers.length}, 去重后=${deduped.length}, 过滤历史后=${newPapers.length}`);
+    return newPapers;
   }
 
   // 第二步：把论文交给大模型分析，并按 relevance_threshold 做过滤。
@@ -134,7 +193,7 @@ export class Pipeline {
   }
 
   // 第三步：保存筛选后的分析结果。
-  // 在 Worker 环境下，实际会由 WorkerD1Storage 写入 D1。
+  // 在 Worker 环境下，实际会由 WorkerD1Storage 写入 D1；对外读取见 GET /api/analysis-results。
   async saveResults(results: AnalysisResult[], targetDate: string): Promise<string> {
     const resultsData = this.serializeResults(results);
     const location = await this.storage.saveResults(resultsData, targetDate, this.config);
@@ -142,10 +201,10 @@ export class Pipeline {
     return location;
   }
 
-  // 第四步：把这次处理过的论文 arxiv_id 写入历史。
+  // 第四步：把这次处理过的论文 id 写入历史。
   // 下次运行时会跳过这些 id，避免重复分析和重复花费模型调用成本。
   async updateHistory(papers: Paper[]): Promise<void> {
-    const newIds = papers.map(paper => paper.arxiv_id);
+    const newIds = papers.map(paper => paper.id);
     const updatedIds = [...new Set([...this.config.processed_ids, ...newIds])];
 
     await this.storage.saveHistory(this.config.history_file, updatedIds, this.config);
@@ -162,10 +221,10 @@ export class Pipeline {
 
     const targetDateStr = this.resolveTargetDate(targetDate);
 
-    console.info('步骤 1: 开始嗅探 arXiv 论文');
+    console.info('步骤 1: 开始嗅探论文');
     const papers = await this.sniffPapers(targetDate);
     const totalFetched = papers.length;
-    console.info(`步骤 1 完成: 嗅探到 ${totalFetched} 篇新论文`);
+    console.info(`步骤 1 完成: 获取到 ${totalFetched} 篇新论文`);
 
     if (papers.length === 0) {
       console.info('没有新论文，流水线提前结束');
@@ -203,12 +262,12 @@ export class Pipeline {
   // 把内部结果转换成更直观的 JSON 结构，方便保存和后续展示。
   private serializeResults(results: AnalysisResult[]): SerializedAnalysisResult[] {
     return results.map(result => ({
-      arxiv_id: result.paper.arxiv_id,
+      id: result.paper.id,
       title: result.paper.title,
       abstract: result.paper.abstract,
       authors: result.paper.authors,
       categories: result.paper.categories,
-      pdf_url: result.paper.pdf_url,
+      paper_url: result.paper.paper_url,
       published: result.paper.published,
       score: result.score,
       reason: result.reason,

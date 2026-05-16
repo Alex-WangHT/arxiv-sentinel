@@ -11,6 +11,11 @@
     "dev": "wrangler dev --config backend/wrangler.toml --local",
     "dev:scheduled": "wrangler dev --config backend/wrangler.toml --local --test-scheduled",
     "deploy": "wrangler deploy --config backend/wrangler.toml",
+    "deploy:local": "bash script/deploy.sh local",
+    "deploy:cloud": "bash script/deploy.sh cloud",
+    "test:all": "bash script/test.sh local",
+    "test:local": "bash script/test.sh local",
+    "test:cloud": "bash script/test.sh cloud",
     "tail": "wrangler tail --config backend/wrangler.toml"
   },
   "dependencies": {},

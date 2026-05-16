@@ -1,4 +1,4 @@
-import { DomainRule, Paper } from './models';
+import { DomainRule, Paper, PaperSniffer } from './models';
 
 /*
  * ArxivSniffer 负责从 arXiv API 拉取论文列表。
@@ -56,22 +56,20 @@ async function waitForArxivSlot(): Promise<void> {
   await nextRequest;
 }
 
-export class ArxivSniffer {
+export class ArxivSniffer implements PaperSniffer {
+  readonly name = 'arXiv';
   private domainRules: DomainRule[];
   private maxResults: number;
-  private processedIds: Set<string>;
   private targetDate: Date;
   private targetStr: string;
 
   constructor(
     domainRules: DomainRule[],
     maxResults: number,
-    processedIds: string[],
     targetDate?: Date,
   ) {
     this.domainRules = domainRules;
     this.maxResults = maxResults;
-    this.processedIds = new Set(processedIds);
 
     // arXiv 的最新数据常常会有发布时间和索引延迟。
     // 默认抓“两天前”的论文，可以减少今天/昨天数据不完整导致的误判。
@@ -88,7 +86,7 @@ export class ArxivSniffer {
     this.targetStr = this.formatDate(this.targetDate);
   }
 
-  // 主入口：按配置里的每个分类分别抓取，再合并、去重、过滤历史记录。
+  // 主入口：按配置里的每个分类分别抓取，再合并、去重。
   async sniff(): Promise<Paper[]> {
     console.info(`开始嗅探 arXiv，目标日期: ${this.targetStr}`);
 
@@ -99,8 +97,6 @@ export class ArxivSniffer {
 
     return this.postProcess(results);
   }
-
-  sniffAsync = this.sniff;
 
   // 使用 UTC 日期，避免 Worker 部署地区、本机时区不同导致日期不一致。
   private formatDate(date: Date): string {
@@ -280,12 +276,13 @@ export class ArxivSniffer {
 
         // 把 arXiv XML 条目转换成项目内部统一使用的 Paper 对象。
         const paper: Paper = {
-          arxiv_id: this.normalizeArxivId(id),
+          id: this.normalizeArxivId(id),
+          source: 'arxiv',
           title: this.normalizeText(title),
           abstract: this.normalizeText(summary),
           authors: this.extractAuthors(entryXml),
           categories: this.extractCategories(entryXml),
-          pdf_url: this.extractPdfUrl(entryXml),
+          paper_url: this.extractPaperUrl(entryXml),
           published: publishedStr,
         };
 
@@ -302,10 +299,9 @@ export class ArxivSniffer {
     return papers;
   }
 
-  // 后处理分三步：
+  // 后处理：
   // 1. 合并多个分类后的重复论文去重；
-  // 2. 排除历史上已经处理过的 arxiv_id；
-  // 3. 只有所有分类请求都失败时才抛错；成功但无论文会交给 Pipeline 正常提前结束。
+  // 2. 只有所有分类请求都失败时才抛错；成功但无论文会交给 Pipeline 正常提前结束。
   private postProcess(results: CategoryFetchResult[]): Paper[] {
     const failedResults = results.filter(result => !result.ok);
     if (failedResults.length === results.length && results.length > 0) {
@@ -327,19 +323,17 @@ export class ArxivSniffer {
     const deduped: Paper[] = [];
 
     for (const paper of allPapers) {
-      if (!seenIds.has(paper.arxiv_id)) {
-        seenIds.add(paper.arxiv_id);
+      if (!seenIds.has(paper.id)) {
+        seenIds.add(paper.id);
         deduped.push(paper);
       }
     }
 
-    const newPapers = deduped.filter(paper => !this.processedIds.has(paper.arxiv_id));
-
     console.info(
-      `嗅探完成: 获取总数=${totalFetched}, 去重后=${deduped.length}, 历史去重后=${newPapers.length} (目标日期=${this.targetStr})`,
+      `嗅探完成: 获取总数=${totalFetched}, 去重后=${deduped.length} (目标日期=${this.targetStr})`,
     );
 
-    return newPapers;
+    return deduped;
   }
 
   // 从 XML 片段里提取第一个匹配文本，并处理 XML 转义字符。
@@ -367,6 +361,7 @@ export class ArxivSniffer {
   private extractAuthors(entryXml: string): string[] {
     const authors: string[] = [];
     const authorRegex = /<author[\s\S]*?<name>([\s\S]*?)<\/name>[\s\S]*?<\/author>/g;
+    authorRegex.lastIndex = 0; // 重置正则状态
     let match: RegExpExecArray | null;
 
     while ((match = authorRegex.exec(entryXml)) !== null) {
@@ -387,6 +382,29 @@ export class ArxivSniffer {
     }
 
     return [...categories];
+  }
+
+  // arXiv entry 的 <id> 是摘要页链接；如果缺失则回退到非 PDF link，再回退到 PDF。
+  private extractPaperUrl(entryXml: string): string {
+    const id = this.firstText(entryXml, /<id>([\s\S]*?)<\/id>/);
+    if (id) {
+      return id;
+    }
+
+    const linkRegex = /<link\b([^>]*)>/g;
+    let match: RegExpExecArray | null;
+
+    while ((match = linkRegex.exec(entryXml)) !== null) {
+      const attributes = match[1];
+      const href = attributes.match(/href="([^"]+)"/)?.[1] || '';
+      const title = attributes.match(/title="([^"]+)"/)?.[1] || '';
+      const type = attributes.match(/type="([^"]+)"/)?.[1] || '';
+      if (href && title !== 'pdf' && type !== 'application/pdf' && !href.includes('/pdf/')) {
+        return this.decodeXml(href);
+      }
+    }
+
+    return this.extractPdfUrl(entryXml);
   }
 
   // arXiv entry 里有多个 link，只有 title=pdf 或 type=application/pdf 的才是 PDF。
