@@ -99,18 +99,51 @@ export interface PipelineRunResult {
   }>;
 }
 
+export type PipelineRunStatus = 'queued' | 'running' | 'completed' | 'failed';
+export type PipelineLogLevel = 'info' | 'warn' | 'error';
+
+export interface PipelineRunLogEntry {
+  at: string;
+  level: PipelineLogLevel;
+  message: string;
+  progress: number;
+  step: string;
+}
+
+export interface PipelineRunRecord {
+  run_id: string;
+  target_date: string;
+  status: PipelineRunStatus;
+  progress: number;
+  current_step: string;
+  logs: PipelineRunLogEntry[];
+  total_fetched: number;
+  total_analyzed: number;
+  error?: string;
+  created_at: string;
+  updated_at: string;
+  completed_at?: string;
+}
+
+export interface PipelineRunStatusResponse {
+  ok: true;
+  run: PipelineRunRecord | null;
+}
+
 export type RunResponse =
   | {
       ok: true;
       queued: true;
       mode: 'manual';
       targetDate: string;
+      run?: PipelineRunRecord;
     }
   | {
       ok: true;
       queued: false;
       mode: 'manual';
       result: PipelineRunResult;
+      run?: PipelineRunRecord;
     };
 
 export interface UiFilters {

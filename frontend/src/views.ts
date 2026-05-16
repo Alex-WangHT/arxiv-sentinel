@@ -5,6 +5,8 @@ import {
   Flash,
   HealthResponse,
   PaperSourceConfig,
+  PipelineRunLogEntry,
+  PipelineRunStatus,
   RunResponse,
   Score,
   UiFilters,
@@ -24,9 +26,12 @@ interface KeywordFacet {
 }
 
 export interface DashboardRefreshState {
-  kind: 'running' | 'completed' | 'error';
+  kind: PipelineRunStatus | 'error';
   date: string;
   attempt: number;
+  progress?: number;
+  currentStep?: string;
+  logs?: PipelineRunLogEntry[];
   nextUrl?: string;
   message: string;
 }
@@ -221,22 +226,42 @@ function renderRefreshStatus(state?: DashboardRefreshState): string {
     return '';
   }
 
+  const progressValue = Math.max(0, Math.min(100, Math.round(state.progress ?? 0)));
+  const isActive = state.kind === 'queued' || state.kind === 'running';
   const next = state.nextUrl
     ? `<p class="muted">页面会自动检查结果；已检查 ${state.attempt} 次。</p>`
     : '';
-  const progress = state.kind === 'running'
-    ? '<div class="progress"><span></span></div>'
+  const progress = isActive
+    ? `<div class="progress" aria-label="运行进度"><span style="width: ${progressValue}%"></span></div>`
     : '';
   const action = state.nextUrl
     ? `<a class="button secondary mini" href="${escapeAttr(state.nextUrl)}">立即检查</a>`
     : '';
+  const logs = (state.logs || []).slice(-6);
+  const logList = logs.length > 0
+    ? `<ol class="run-log">
+        ${logs.map(log => `<li class="log-${escapeAttr(log.level)}">
+          <span>${escapeHtml(log.step || '日志')}</span>
+          <p>${escapeHtml(log.message)}</p>
+        </li>`).join('')}
+      </ol>`
+    : '';
+  const title = state.kind === 'queued'
+    ? '流水线已排队'
+    : state.kind === 'running'
+      ? '正在运行流水线'
+      : state.kind === 'completed'
+        ? '刷新完成'
+        : '刷新失败';
 
   return `<section class="refresh-status refresh-${escapeAttr(state.kind)}"${state.nextUrl ? ` data-auto-refresh-url="${escapeAttr(state.nextUrl)}"` : ''}>
     <div>
-      <h2>${state.kind === 'running' ? '正在运行流水线' : state.kind === 'completed' ? '刷新完成' : '刷新失败'}</h2>
+      <h2>${title}</h2>
+      ${state.currentStep ? `<strong class="refresh-step">${escapeHtml(state.currentStep)} · ${progressValue}%</strong>` : ''}
       <p>${escapeHtml(state.message)}</p>
       ${next}
       ${progress}
+      ${logList}
     </div>
     ${action}
   </section>`;
@@ -1183,13 +1208,23 @@ h2 { font-size: 18px; line-height: 1.25; }
   border-color: #93c5fd;
   box-shadow: inset 3px 0 0 var(--medium);
 }
+.refresh-queued {
+  border-color: #fed7aa;
+  box-shadow: inset 3px 0 0 var(--accent-2);
+}
 .refresh-completed {
   border-color: #99f6e4;
   box-shadow: inset 3px 0 0 var(--accent);
 }
-.refresh-error {
+.refresh-error, .refresh-failed {
   border-color: #fecaca;
   box-shadow: inset 3px 0 0 var(--danger);
+}
+.refresh-step {
+  color: var(--muted);
+  display: block;
+  font-size: 12px;
+  margin-bottom: 6px;
 }
 .progress {
   background: var(--surface-2);
@@ -1199,16 +1234,38 @@ h2 { font-size: 18px; line-height: 1.25; }
   overflow: hidden;
 }
 .progress span {
-  animation: progress-slide 1.4s ease-in-out infinite;
   background: var(--medium);
   border-radius: inherit;
   display: block;
   height: 100%;
-  width: 42%;
+  transition: width 0.3s ease;
 }
-@keyframes progress-slide {
-  0% { transform: translateX(-110%); }
-  100% { transform: translateX(260%); }
+.run-log {
+  display: grid;
+  gap: 6px;
+  list-style: none;
+  margin: 12px 0 0;
+  max-width: 760px;
+  padding: 0;
+}
+.run-log li {
+  border-left: 2px solid var(--line);
+  padding-left: 8px;
+}
+.run-log span {
+  color: var(--muted);
+  display: block;
+  font-size: 12px;
+  font-weight: 800;
+}
+.run-log p {
+  margin: 1px 0 0;
+}
+.run-log .log-error {
+  border-left-color: var(--danger);
+}
+.run-log .log-warn {
+  border-left-color: var(--accent-2);
 }
 .status-error {
   background: #fef2f2;

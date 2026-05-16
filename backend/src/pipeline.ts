@@ -6,6 +6,25 @@ import { AnalysisResult, Paper, PipelineResult, PaperSniffer } from './models';
 
 const BEIJING_TIME_OFFSET_MS = 8 * 60 * 60 * 1000;
 
+export type PipelineRunStatus = 'queued' | 'running' | 'completed' | 'failed';
+export type PipelineLogLevel = 'info' | 'warn' | 'error';
+
+export interface PipelineProgressUpdate {
+  targetDate: string;
+  status: PipelineRunStatus;
+  progress: number;
+  step: string;
+  message: string;
+  level?: PipelineLogLevel;
+  totalFetched?: number;
+  totalAnalyzed?: number;
+  error?: string;
+}
+
+export interface PipelineProgressSink {
+  update(update: PipelineProgressUpdate): Promise<void>;
+}
+
 /*
  * Pipeline 是业务流程的总调度器。
  *
@@ -108,8 +127,13 @@ export class Pipeline {
   private analyzer: PaperAnalyzer;
   private storage: PipelineStorage;
   private sniffers: PaperSniffer[] = [];
+  private progress = 0;
 
-  constructor(config: Config, storage: PipelineStorage = new MemoryPipelineStorage()) {
+  constructor(
+    config: Config,
+    storage: PipelineStorage = new MemoryPipelineStorage(),
+    private progressSink?: PipelineProgressSink,
+  ) {
     this.config = config;
     this.storage = storage;
     // LlmClient 只负责“怎么调用模型”，不知道论文业务。
@@ -237,6 +261,15 @@ export class Pipeline {
     console.info(`历史记录已更新，新增 ${newIds.length} 条记录`);
   }
 
+  private async reportProgress(update: PipelineProgressUpdate): Promise<void> {
+    this.progress = update.progress;
+    if (!this.progressSink) {
+      return;
+    }
+
+    await this.progressSink.update(update);
+  }
+
   // 主入口：按固定顺序执行整个论文嗅探和分析流程。
   // 返回 PipelineResult，方便 HTTP 接口直接返回给调试者。
   async run(targetDate?: Date): Promise<PipelineResult> {
@@ -245,45 +278,136 @@ export class Pipeline {
     console.info('='.repeat(60));
 
     const targetDateStr = this.resolveTargetDate(targetDate);
+    this.progress = 0;
 
-    console.info('步骤 1: 开始嗅探论文');
-    const papers = await this.sniffPapers(targetDate);
-    const totalFetched = papers.length;
-    console.info(`步骤 1 完成: 获取到 ${totalFetched} 篇新论文`);
+    try {
+      await this.reportProgress({
+        targetDate: targetDateStr,
+        status: 'running',
+        progress: 5,
+        step: '初始化',
+        message: '流水线已启动，正在加载配置和历史记录',
+      });
 
-    if (papers.length === 0) {
-      console.info('没有新论文，流水线提前结束');
+      console.info('步骤 1: 开始嗅探论文');
+      await this.reportProgress({
+        targetDate: targetDateStr,
+        status: 'running',
+        progress: 15,
+        step: '嗅探论文',
+        message: '正在从已启用来源查找当日论文',
+      });
+      const papers = await this.sniffPapers(targetDate);
+      const totalFetched = papers.length;
+      console.info(`步骤 1 完成: 获取到 ${totalFetched} 篇新论文`);
+      await this.reportProgress({
+        targetDate: targetDateStr,
+        status: 'running',
+        progress: 35,
+        step: '嗅探完成',
+        message: `获取到 ${totalFetched} 篇新论文`,
+        totalFetched,
+      });
+
+      if (papers.length === 0) {
+        console.info('没有新论文，流水线提前结束');
+        await this.reportProgress({
+          targetDate: targetDateStr,
+          status: 'completed',
+          progress: 100,
+          step: '完成',
+          message: '没有新论文需要分析，流水线已结束',
+          totalFetched: 0,
+          totalAnalyzed: 0,
+        });
+        return {
+          date: targetDateStr,
+          total_fetched: 0,
+          total_analyzed: 0,
+          total_filtered: 0,
+          results: [],
+        };
+      }
+
+      console.info('步骤 2: 开始分析论文摘要');
+      await this.reportProgress({
+        targetDate: targetDateStr,
+        status: 'running',
+        progress: 45,
+        step: '分析论文',
+        message: `正在调用模型分析 ${papers.length} 篇论文`,
+        totalFetched,
+      });
+      const analyzedResults = await this.analyzePapers(papers);
+      const totalAnalyzed = analyzedResults.length;
+      console.info(`步骤 2 完成: 已分析 ${totalAnalyzed} 篇，未按重点关注词丢弃论文`);
+      await this.reportProgress({
+        targetDate: targetDateStr,
+        status: 'running',
+        progress: 75,
+        step: '分析完成',
+        message: `已完成 ${totalAnalyzed} 篇论文分析`,
+        totalFetched,
+        totalAnalyzed,
+      });
+
+      console.info('步骤 3: 保存分析结果');
+      await this.reportProgress({
+        targetDate: targetDateStr,
+        status: 'running',
+        progress: 88,
+        step: '保存结果',
+        message: '正在保存分析结果到数据库',
+        totalFetched,
+        totalAnalyzed,
+      });
+      await this.saveResults(analyzedResults, targetDateStr);
+
+      console.info('步骤 4: 更新处理历史');
+      await this.reportProgress({
+        targetDate: targetDateStr,
+        status: 'running',
+        progress: 95,
+        step: '更新历史',
+        message: '正在更新已处理论文历史',
+        totalFetched,
+        totalAnalyzed,
+      });
+      await this.updateHistory(papers);
+
+      console.info('='.repeat(60));
+      console.info('流水线执行完成');
+      console.info('='.repeat(60));
+
+      await this.reportProgress({
+        targetDate: targetDateStr,
+        status: 'completed',
+        progress: 100,
+        step: '完成',
+        message: `流水线已完成，共分析 ${totalAnalyzed} 篇论文`,
+        totalFetched,
+        totalAnalyzed,
+      });
+
       return {
         date: targetDateStr,
-        total_fetched: 0,
-        total_analyzed: 0,
-        total_filtered: 0,
-        results: [],
+        total_fetched: totalFetched,
+        total_analyzed: totalAnalyzed,
+        total_filtered: totalAnalyzed,
+        results: analyzedResults,
       };
+    } catch (error) {
+      await this.reportProgress({
+        targetDate: targetDateStr,
+        status: 'failed',
+        progress: this.progress,
+        step: '失败',
+        message: (error as Error).message,
+        level: 'error',
+        error: (error as Error).message,
+      });
+      throw error;
     }
-
-    console.info('步骤 2: 开始分析论文摘要');
-    const analyzedResults = await this.analyzePapers(papers);
-    const totalAnalyzed = analyzedResults.length;
-    console.info(`步骤 2 完成: 已分析 ${totalAnalyzed} 篇，未按重点关注词丢弃论文`);
-
-    console.info('步骤 3: 保存分析结果');
-    await this.saveResults(analyzedResults, targetDateStr);
-
-    console.info('步骤 4: 更新处理历史');
-    await this.updateHistory(papers);
-
-    console.info('='.repeat(60));
-    console.info('流水线执行完成');
-    console.info('='.repeat(60));
-
-    return {
-      date: targetDateStr,
-      total_fetched: totalFetched,
-      total_analyzed: totalAnalyzed,
-      total_filtered: totalAnalyzed,
-      results: analyzedResults,
-    };
   }
 
   // 把内部结果转换成更直观的 JSON 结构，方便保存和后续展示。

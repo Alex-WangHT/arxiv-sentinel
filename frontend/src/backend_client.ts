@@ -4,6 +4,7 @@ import {
   ConfigResponse,
   EditableConfig,
   HealthResponse,
+  PipelineRunStatusResponse,
   RunResponse,
 } from './models';
 
@@ -94,6 +95,12 @@ export class BackendClient {
   async analysisResults(targetDate: string): Promise<AnalysisResultsResponse> {
     return this.request<AnalysisResultsResponse>(
       `/api/analysis-results?target_date=${encodeURIComponent(targetDate)}`,
+    );
+  }
+
+  async runStatus(targetDate: string): Promise<PipelineRunStatusResponse> {
+    return this.request<PipelineRunStatusResponse>(
+      `/api/run-status?target_date=${encodeURIComponent(targetDate)}`,
     );
   }
 

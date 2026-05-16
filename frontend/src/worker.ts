@@ -6,6 +6,7 @@ import {
   EditableConfig,
   Flash,
   HealthResponse,
+  PipelineRunRecord,
   RunResponse,
   Score,
   UiFilters,
@@ -289,6 +290,33 @@ async function loadStatusSummary(client: BackendClient, env: Env): Promise<{
   };
 }
 
+function refreshStateFromRun(
+  filters: UiFilters,
+  run: PipelineRunRecord,
+  attempt: number,
+  resultsCount: number,
+): DashboardRefreshState {
+  const active = run.status === 'queued' || run.status === 'running';
+  const message = run.status === 'completed'
+    ? resultsCount > 0
+      ? `${filters.date} 的流水线已完成，已从数据库读取 ${resultsCount} 篇论文。`
+      : `${filters.date} 的流水线已完成，没有新的入库论文。`
+    : run.status === 'failed'
+      ? run.error || '流水线运行失败。'
+      : run.logs.at(-1)?.message || `${filters.date} 的流水线正在运行。`;
+
+  return {
+    kind: run.status,
+    date: filters.date,
+    attempt,
+    progress: run.progress,
+    currentStep: run.current_step,
+    logs: run.logs,
+    nextUrl: active ? dashboardPath(filters, { running: '1', attempt: attempt + 1 }) : undefined,
+    message,
+  };
+}
+
 async function handleDashboard(
   request: Request,
   env: Env,
@@ -319,21 +347,31 @@ async function handleDashboard(
       client,
       statusSummary.config,
     );
+    const latestRun = (refresh.ensure || refresh.running)
+      ? (await client.runStatus(filters.date).catch(() => undefined))?.run || undefined
+      : undefined;
 
     if ((refresh.ensure || refresh.running) && allResults.length === 0) {
-      status = refresh.running ? 200 : 202;
-      const nextAttempt = refresh.attempt + 1;
-      refreshState = {
-        kind: 'running',
-        date: filters.date,
-        attempt: nextAttempt,
-        nextUrl: dashboardPath(filters, { running: '1', attempt: nextAttempt }),
-        message: refresh.running
-          ? `${filters.date} 的流水线仍在运行，暂未查询到入库论文。`
-          : `${filters.date} 暂无入库论文，已启动抓取和分析流水线。`,
-      };
+      if (latestRun) {
+        refreshState = refreshStateFromRun(filters, latestRun, refresh.attempt, allResults.length);
+        status = latestRun.status === 'failed' ? 502 : latestRun.status === 'completed' ? 200 : 202;
+      } else {
+        status = refresh.running ? 200 : 202;
+        const nextAttempt = refresh.attempt + 1;
+        refreshState = {
+          kind: 'queued',
+          date: filters.date,
+          attempt: nextAttempt,
+          progress: 0,
+          currentStep: '排队',
+          nextUrl: dashboardPath(filters, { running: '1', attempt: nextAttempt }),
+          message: refresh.running
+            ? `${filters.date} 的流水线仍在运行，暂未查询到入库论文。`
+            : `${filters.date} 暂无入库论文，已启动抓取和分析流水线。`,
+        };
+      }
 
-      if (!refresh.running) {
+      if (!refresh.running && !latestRun) {
         const runTask = client.run({ date: filters.date, sync: false })
           .catch(error => {
             console.error(`刷新触发流水线失败: ${errorMessage(error)}`);
@@ -346,17 +384,28 @@ async function handleDashboard(
         }
       }
     } else if (refresh.running && allResults.length > 0) {
-      refreshState = {
-        kind: 'completed',
-        date: filters.date,
-        attempt: refresh.attempt,
-        message: `${filters.date} 的流水线已完成，已从数据库读取 ${allResults.length} 篇论文。`,
-      };
+      refreshState = latestRun
+        ? refreshStateFromRun(filters, {
+          ...latestRun,
+          status: latestRun.status === 'failed' ? 'failed' : 'completed',
+          progress: latestRun.status === 'failed' ? latestRun.progress : 100,
+        }, refresh.attempt, allResults.length)
+        : {
+          kind: 'completed',
+          date: filters.date,
+          attempt: refresh.attempt,
+          progress: 100,
+          currentStep: '完成',
+          message: `${filters.date} 的流水线已完成，已从数据库读取 ${allResults.length} 篇论文。`,
+        };
     } else if (refresh.ensure && allResults.length > 0) {
       refreshState = {
         kind: 'completed',
         date: filters.date,
         attempt: 0,
+        progress: 100,
+        currentStep: '完成',
+        logs: latestRun?.logs,
         message: `数据库中已有 ${filters.date} 的论文，共 ${allResults.length} 篇，已直接刷新。`,
       };
     }
