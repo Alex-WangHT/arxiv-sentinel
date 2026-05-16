@@ -76,7 +76,6 @@ fi
 
 echo "==> Backend URL for frontend: $backend_url"
 echo "==> Deploying frontend Worker"
-BACKEND_BASE_URL="$backend_url" \
 BACKEND_ADMIN_TOKEN="$ADMIN_TOKEN" \
 APP_TITLE="${APP_TITLE:-PaperSniffer}" \
   bash "$FRONTEND_DEPLOY" cloud | tee "$frontend_log"

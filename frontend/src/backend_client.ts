@@ -15,10 +15,10 @@ export interface BackendClientEnv {
   BACKEND?: any;
 }
 
-function backendBaseUrl(env: BackendClientEnv): string {
+function backendBaseUrl(env: BackendClientEnv): string | undefined {
   const baseUrl = env.BACKEND_BASE_URL?.trim();
   if (!baseUrl) {
-    throw new Error('未配置后端地址 BACKEND_BASE_URL');
+    return undefined;
   }
   return baseUrl.endsWith('/') ? baseUrl : `${baseUrl}/`;
 }
@@ -121,7 +121,8 @@ export class BackendClient {
   }
 
   async proxy(request: Request, mappedPath: string): Promise<Response> {
-    const backendUrl = new URL(mappedPath, backendBaseUrl(this.env));
+    const base = backendBaseUrl(this.env) || 'https://paper-sniffer-backend';
+    const backendUrl = new URL(mappedPath, base);
     const incomingUrl = new URL(request.url);
     backendUrl.search = incomingUrl.search;
 
@@ -149,7 +150,8 @@ export class BackendClient {
   }
 
   private async request<T>(path: string, init: RequestInit = {}): Promise<T> {
-    const url = new URL(path, backendBaseUrl(this.env));
+    const base = backendBaseUrl(this.env) || 'https://paper-sniffer-backend';
+    const url = new URL(path, base);
     const headers = new Headers(init.headers);
     headers.set('authorization', `Bearer ${backendAdminToken(this.env)}`);
 

@@ -2,8 +2,8 @@
 # Local/cloud deployment helper for the PaperSniffer frontend Worker.
 #
 # Usage:
-#   BACKEND_BASE_URL=http://127.0.0.1:8787 BACKEND_ADMIN_TOKEN=... bash frontend/script/deploy.sh local
-#   BACKEND_BASE_URL=https://paper-sniffer-backend.<subdomain>.workers.dev BACKEND_ADMIN_TOKEN=... bash frontend/script/deploy.sh cloud
+#   BACKEND_ADMIN_TOKEN=... bash frontend/script/deploy.sh local
+#   BACKEND_ADMIN_TOKEN=... bash frontend/script/deploy.sh cloud
 
 set -euo pipefail
 
@@ -13,7 +13,6 @@ SRC_VARS="$CONFIG_DIR/.dev.vars"
 WRANGLER_CONFIG="$ROOT/frontend/wrangler.toml"
 
 REQUIRED_VARS=(
-  BACKEND_BASE_URL
   BACKEND_ADMIN_TOKEN
 )
 
