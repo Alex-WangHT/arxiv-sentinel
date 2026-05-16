@@ -1,0 +1,16 @@
+name = "paper-sniffer-frontend"
+main = "src/worker.ts"
+compatibility_date = "2026-05-14"
+workers_dev = true
+
+[vars]
+# Local default. Override in Cloudflare with your deployed backend URL.
+BACKEND_BASE_URL = "https://paper-sniffer-backend.alexwang010112.workers.dev"
+APP_TITLE = "PaperSniffer"
+
+[dev]
+port = 8788
+
+[[services]]
+binding = "BACKEND"
+service = "paper-sniffer-backend"

@@ -1,4 +1,4 @@
-import { DomainRule } from './models';
+import { DomainRule, PaperSource } from './models';
 
 /*
  * 这个文件负责“把外部配置变成程序能安全使用的 Config 对象”。
@@ -15,6 +15,7 @@ import { DomainRule } from './models';
 const RELEVANCE_LEVELS = ['IRRELEVANT', 'LOW', 'MEDIUM', 'HIGH'] as const;
 const LOG_LEVELS = ['DEBUG', 'INFO', 'WARNING', 'ERROR'] as const;
 const DOMAIN_MODES = ['accept_all', 'categories_filter'] as const;
+const SOURCE_TYPES = ['arxiv', 'custom'] as const;
 
 // 这里用 typeof ...[number] 从数组里自动推导联合类型。
 // 例如 RelevanceLevel 等价于 'IRRELEVANT' | 'LOW' | 'MEDIUM' | 'HIGH'。
@@ -25,6 +26,7 @@ type LogLevel = typeof LOG_LEVELS[number];
 // 它比 WorkerConfigEnv 更“干净”：数组已经是数组，数字已经是 number，不再是字符串。
 export interface ConfigData {
   keywords: string[];
+  sources: PaperSource[];
   domain_rules: DomainRule[];
   relevance_threshold: RelevanceLevel;
   openai_api_key: string;
@@ -45,6 +47,7 @@ export interface ConfigData {
 // 后面 parseRawConfig / optionalNumber 会把它转成 number。
 export interface WorkerConfigEnv {
   KEYWORDS?: string;
+  SOURCES?: string;
   DOMAIN_RULES?: string;
   RELEVANCE_THRESHOLD?: string;
   OPENAI_API_KEY?: string;
@@ -66,6 +69,7 @@ type RawConfig = Record<string, unknown>;
 // 业务代码只依赖这个类，不需要关心配置到底来自 KV、环境变量还是 secret。
 export class Config {
   keywords: string[];
+  sources: PaperSource[];
   domain_rules: DomainRule[];
   relevance_threshold: RelevanceLevel;
   openai_api_key: string;
@@ -83,6 +87,7 @@ export class Config {
 
   constructor(data: ConfigData) {
     this.keywords = data.keywords;
+    this.sources = data.sources;
     this.domain_rules = data.domain_rules;
     this.relevance_threshold = data.relevance_threshold;
     this.openai_api_key = data.openai_api_key;
@@ -110,6 +115,7 @@ export class Config {
   static fromEnv(env: WorkerConfigEnv): Config {
     const merged: RawConfig = {
       keywords: this.envList(env.KEYWORDS, undefined),
+      sources: this.envJson(env.SOURCES, undefined),
       domain_rules: this.envJson(env.DOMAIN_RULES, undefined),
       relevance_threshold: env.RELEVANCE_THRESHOLD,
       openai_api_key: env.OPENAI_API_KEY,
@@ -145,12 +151,14 @@ export class Config {
   // 把来源不确定的 raw 配置规整成 ConfigData。
   // unknown 表示“我现在还不知道它是什么类型”，所以这里会逐项转换。
   private static parseRawConfig(raw: RawConfig): ConfigData {
+    const sources = this.parseSources(raw.sources);
     const domainRules = this.parseDomainRules(raw.domain_rules);
     const threshold = String(raw.relevance_threshold || 'MEDIUM').toUpperCase();
     const logLevel = String(raw.log_level || 'INFO').toUpperCase();
 
     return {
       keywords: this.asStringArray(raw.keywords),
+      sources,
       domain_rules: domainRules,
       relevance_threshold: threshold as RelevanceLevel,
       openai_api_key: String(raw.openai_api_key || ''),
@@ -167,13 +175,47 @@ export class Config {
     };
   }
 
-  // 解析 domain_rules。这个配置决定要抓 arXiv 的哪些分类，以及是否用交叉分类过滤。
+  private static defaultSources(): PaperSource[] {
+    return [{
+      id: 'arxiv',
+      type: 'arxiv',
+      name: 'arXiv',
+      enabled: true,
+    }];
+  }
+
+  private static parseSources(value: unknown): PaperSource[] {
+    const sourceData = Array.isArray(value) ? value : [];
+    if (sourceData.length === 0) {
+      return this.defaultSources();
+    }
+
+    const sources = sourceData
+      .map(item => {
+        const record = item as Record<string, unknown>;
+        const type = String(record.type || 'custom').trim().toLowerCase();
+        const id = String(record.id || type || '').trim();
+        const name = String(record.name || id || type).trim();
+        return {
+          id,
+          type: type as PaperSource['type'],
+          name,
+          enabled: record.enabled !== false && record.enabled !== 'false',
+        };
+      })
+      .filter(source => source.id);
+
+    return sources.length > 0 ? sources : this.defaultSources();
+  }
+
+  // 解析 domain_rules。这个配置决定每个来源要抓哪些领域分类，以及是否使用交叉分类过滤。
   private static parseDomainRules(value: unknown): DomainRule[] {
     const rulesData = Array.isArray(value) ? value : [];
 
     return rulesData.map((item) => {
       const record = item as Record<string, unknown>;
       return {
+        source: String(record.source || record.source_id || 'arxiv').trim() || 'arxiv',
         category: String(record.category || ''),
         mode: record.mode as DomainRule['mode'],
         filter_categories: this.asStringArray(record.filter_categories),
@@ -186,19 +228,58 @@ export class Config {
     const errors: string[] = [];
 
     if (!Array.isArray(cfg.keywords) || cfg.keywords.length === 0) {
-      errors.push('keywords: 必填，且至少包含 1 项');
+      errors.push('重点关注关键词(keywords): 必填，且至少包含 1 项');
     } else {
       cfg.keywords.forEach((keyword, index) => {
         if (typeof keyword !== 'string' || !keyword.trim()) {
-          errors.push(`keywords[${index}]: 必须为非空字符串`);
+          errors.push(`重点关注关键词 keywords[${index}]: 必须为非空字符串`);
         }
       });
+    }
+
+    const sourceIds = new Set<string>();
+    if (!Array.isArray(cfg.sources) || cfg.sources.length === 0) {
+      errors.push('sources: 必填，且至少包含 1 个来源');
+    } else {
+      cfg.sources.forEach((source, index) => {
+        if (typeof source.id !== 'string' || !source.id.trim()) {
+          errors.push(`sources[${index}].id: 必须为非空字符串`);
+        } else if (!/^[a-zA-Z0-9._-]+$/.test(source.id)) {
+          errors.push(`sources[${index}].id: 只能包含字母、数字、点、下划线和连字符`);
+        } else if (sourceIds.has(source.id)) {
+          errors.push(`sources[${index}].id: 来源标识重复 (${source.id})`);
+        } else {
+          sourceIds.add(source.id);
+        }
+
+        if (!SOURCE_TYPES.includes(source.type)) {
+          errors.push(
+            `sources[${index}].type: 必须为 ${SOURCE_TYPES.join(', ')} 之一，当前值: ${source.type}`,
+          );
+        }
+
+        if (typeof source.name !== 'string' || !source.name.trim()) {
+          errors.push(`sources[${index}].name: 必须为非空字符串`);
+        }
+      });
+
+      if (!cfg.sources.some(source => source.enabled)) {
+        errors.push('sources: 至少启用 1 个来源');
+      }
     }
 
     if (!Array.isArray(cfg.domain_rules) || cfg.domain_rules.length === 0) {
       errors.push('domain_rules: 必填，且不能为空数组');
     } else {
       cfg.domain_rules.forEach((rule, index) => {
+        if (typeof rule.source !== 'string' || !rule.source.trim()) {
+          errors.push(`domain_rules[${index}].source: 必须选择来源`);
+        } else if (!sourceIds.has(rule.source)) {
+          errors.push(`domain_rules[${index}].source: 未注册的来源 (${rule.source})`);
+        } else if (!cfg.sources.find(source => source.id === rule.source)?.enabled) {
+          errors.push(`domain_rules[${index}].source: 来源已停用 (${rule.source})`);
+        }
+
         if (typeof rule.category !== 'string' || !rule.category.trim()) {
           errors.push(`domain_rules[${index}].category: 必须为非空字符串`);
         }

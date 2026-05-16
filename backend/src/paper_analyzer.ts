@@ -10,37 +10,35 @@ import { LlmClient } from './llm_client';
  */
 
 const VALID_SCORES = ['HIGH', 'MEDIUM', 'LOW', 'IRRELEVANT'] as const;
-const SCORE_PRIORITY: Record<string, number> = { HIGH: 3, MEDIUM: 2, LOW: 1, IRRELEVANT: 0 };
-
 // 默认系统提示词。
 // 现在 prompt 推荐放在 CONFIG_KV 的配置里（prompt_system / prompt_user_template）统一管理；
 // 如果没有配置，则回退到这里的默认 prompt。
-const DEFAULT_SYSTEM_PROMPT = `你是一位学术论文分析专家。你的任务是对给定的论文标题和摘要进行深入分析，同时评估它与给定关键词的相关度。
+const DEFAULT_SYSTEM_PROMPT = `你是一位学术论文分析专家。你的任务是对给定的论文标题和摘要进行深入分析，同时评估它与给定重点关注关键词的相关度。
 
 请严格按以下 JSON 格式返回分析结果：
 {
   "score": "HIGH|MEDIUM|LOW|IRRELEVANT",
-  "reason": "评估理由，中文，1-2 句话",
+  "reason": "评估理由，中文，1-2 句话；如果论文不匹配重点关注关键词，也要说明它的实际主题",
   "core_methods": "核心技术方法，中文，说明论文使用的主要技术、算法、模型或方法论",
   "problem": "要解决的问题，中文，清晰描述论文试图解决的核心问题或挑战",
   "keywords": ["keyword1", "keyword2", "keyword3"]
 }
 
 相关度评分标准：
-- HIGH: 论文核心主题与关键词高度相关，是该领域的直接贡献
-- MEDIUM: 论文与关键词有一定关联，但不是核心主题
-- LOW: 论文仅边缘性地涉及关键词相关内容
-- IRRELEVANT: 论文与关键词无实质关联
+- HIGH: 论文核心主题与重点关注关键词高度相关，是该领域的直接贡献
+- MEDIUM: 论文与重点关注关键词有一定关联，但不是核心主题
+- LOW: 论文仅边缘性地涉及重点关注关键词相关内容
+- IRRELEVANT: 论文与重点关注关键词无实质关联，但仍需要正常总结
 
 请仅返回 JSON 对象，不要包含其他内容。`;
 
-const DEFAULT_USER_TEMPLATE = `关键词：{keywords}
+const DEFAULT_USER_TEMPLATE = `重点关注关键词：{keywords}
 
 论文标题：{title}
 
 论文摘要：{abstract}
 
-请对这篇论文进行综合分析，评估与关键词的相关度并提取核心信息，返回 JSON 格式的结果。`;
+请对这篇论文进行综合分析，评估与重点关注关键词的相关度并提取核心信息。即使论文不匹配重点关注关键词，也请返回 JSON 格式的完整分析结果。`;
 
 // PromptSource 用来允许外部替换默认 prompt。
 // 例如你想调整评分标准，不需要改代码，只要在 Worker env 里覆盖 prompt。
@@ -52,19 +50,17 @@ export interface PromptSource {
 export class PaperAnalyzer {
   private llmClient: LlmClient;
   private keywords: string[];
-  private threshold: string;
   private systemPrompt: string;
   private userTemplate: string;
 
   constructor(
     llmClient: LlmClient,
     keywords: string[],
-    threshold: string,
+    _threshold: string,
     prompts: PromptSource = {},
   ) {
     this.llmClient = llmClient;
     this.keywords = keywords;
-    this.threshold = threshold;
     this.systemPrompt = prompts.systemPrompt || DEFAULT_SYSTEM_PROMPT;
     this.userTemplate = prompts.userTemplate || DEFAULT_USER_TEMPLATE;
   }
@@ -102,16 +98,6 @@ export class PaperAnalyzer {
 
     console.info(`异步分析完成，共处理 ${results.length} 篇论文`);
     return results;
-  }
-
-  // 根据配置中的 relevance_threshold 过滤结果。
-  // 例如 threshold=MEDIUM 时，只保留 MEDIUM 和 HIGH。
-  applyThreshold(results: AnalysisResult[]): AnalysisResult[] {
-    const thresholdPriority = SCORE_PRIORITY[this.threshold] || 0;
-    const filtered = results.filter(result => (SCORE_PRIORITY[result.score] || 0) >= thresholdPriority);
-
-    console.info(`阈值过滤: 过滤前 ${results.length} 篇，过滤后 ${filtered.length} 篇`);
-    return filtered;
   }
 
   // 把一篇论文变成 Chat API 的 messages。

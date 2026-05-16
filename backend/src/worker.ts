@@ -1,21 +1,37 @@
 import { Config, WorkerConfigEnv } from './config';
 import {
   Pipeline,
+  PipelineLogLevel,
+  PipelineProgressSink,
+  PipelineProgressUpdate,
   PipelineStorage,
+  PipelineRunStatus,
   SerializedAnalysisResult,
   type AnalysisResultRecord,
   type AnalysisResultsQuery,
 } from './pipeline';
 
+const BEIJING_TIME_OFFSET_MS = 8 * 60 * 60 * 1000;
+
 const DEFAULT_CONFIG: Record<string, unknown> = {
   keywords: ['large language model', 'agent', 'reasoning'],
+  sources: [
+    {
+      id: 'arxiv',
+      type: 'arxiv',
+      name: 'arXiv',
+      enabled: true,
+    },
+  ],
   domain_rules: [
     {
+      source: 'arxiv',
       category: 'cs.RO',
       mode: 'accept_all',
       filter_categories: [],
     },
     {
+      source: 'arxiv',
       category: 'cs.CV',
       mode: 'categories_filter',
       filter_categories: ['cs.AI', 'cs.CL', 'cs.RO', 'cs.LG'],
@@ -57,6 +73,7 @@ interface Env extends WorkerConfigEnv {
 // Queue 里只放“要跑一次任务”的意图，不直接放论文内容，避免消息过大。
 interface RunMessage {
   type: 'run';
+  runId?: string;
   targetDate?: string;
   requestedAt: string;
   source: 'manual' | 'scheduled';
@@ -85,6 +102,44 @@ interface AnalysisResultsDbRow {
   keywords_json: string;
   created_at: string;
   updated_at: string;
+}
+
+interface PipelineRunLogEntry {
+  at: string;
+  level: PipelineLogLevel;
+  message: string;
+  progress: number;
+  step: string;
+}
+
+interface PipelineRunRecord {
+  run_id: string;
+  target_date: string;
+  status: PipelineRunStatus;
+  progress: number;
+  current_step: string;
+  logs: PipelineRunLogEntry[];
+  total_fetched: number;
+  total_analyzed: number;
+  error?: string;
+  created_at: string;
+  updated_at: string;
+  completed_at?: string;
+}
+
+interface PipelineRunDbRow {
+  run_id: string;
+  target_date: string;
+  status: string;
+  progress: number;
+  current_step: string;
+  logs_json: string;
+  total_fetched: number;
+  total_analyzed: number;
+  error: string | null;
+  created_at: string;
+  updated_at: string;
+  completed_at: string | null;
 }
 
 function parseJsonStringArray(json: string): string[] {
@@ -117,6 +172,47 @@ function mapAnalysisResultRow(row: AnalysisResultsDbRow): AnalysisResultRecord {
     keywords: parseJsonStringArray(row.keywords_json),
     created_at: row.created_at,
     updated_at: row.updated_at,
+  };
+}
+
+function parsePipelineRunLogs(json: string): PipelineRunLogEntry[] {
+  try {
+    const value = JSON.parse(json) as unknown;
+    if (!Array.isArray(value)) {
+      return [];
+    }
+
+    return value
+      .map(item => item as Partial<PipelineRunLogEntry>)
+      .filter(item => typeof item.message === 'string')
+      .map(item => ({
+        at: String(item.at || ''),
+        level: item.level === 'warn' || item.level === 'error' ? item.level : 'info',
+        message: String(item.message || ''),
+        progress: Number.isFinite(item.progress) ? Number(item.progress) : 0,
+        step: String(item.step || ''),
+      }));
+  } catch {
+    return [];
+  }
+}
+
+function mapPipelineRunRow(row: PipelineRunDbRow): PipelineRunRecord {
+  return {
+    run_id: row.run_id,
+    target_date: row.target_date,
+    status: ['queued', 'running', 'completed', 'failed'].includes(row.status)
+      ? row.status as PipelineRunStatus
+      : 'running',
+    progress: row.progress,
+    current_step: row.current_step,
+    logs: parsePipelineRunLogs(row.logs_json),
+    total_fetched: row.total_fetched,
+    total_analyzed: row.total_analyzed,
+    error: row.error || undefined,
+    created_at: row.created_at,
+    updated_at: row.updated_at,
+    completed_at: row.completed_at || undefined,
   };
 }
 
@@ -254,6 +350,153 @@ class WorkerD1Storage implements PipelineStorage {
     }
   }
 
+  async createPipelineRun(
+    targetDate: string,
+    source: RunMessage['source'],
+  ): Promise<PipelineRunRecord> {
+    const now = new Date().toISOString();
+    const runId = crypto.randomUUID();
+    const entry: PipelineRunLogEntry = {
+      at: now,
+      level: 'info',
+      message: source === 'scheduled' ? '定时任务已创建' : '手动刷新已创建',
+      progress: 0,
+      step: '排队',
+    };
+
+    if (!this.db) {
+      return {
+        run_id: runId,
+        target_date: targetDate,
+        status: 'queued',
+        progress: 0,
+        current_step: '排队',
+        logs: [entry],
+        total_fetched: 0,
+        total_analyzed: 0,
+        created_at: now,
+        updated_at: now,
+      };
+    }
+
+    await this.ensureSchema();
+    await this.db.prepare(`
+      INSERT INTO pipeline_runs (
+        run_id,
+        target_date,
+        status,
+        progress,
+        current_step,
+        logs_json,
+        total_fetched,
+        total_analyzed,
+        error,
+        created_at,
+        updated_at,
+        completed_at
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).bind(
+      runId,
+      targetDate,
+      'queued',
+      0,
+      '排队',
+      JSON.stringify([entry]),
+      0,
+      0,
+      null,
+      now,
+      now,
+      null,
+    ).run();
+
+    return {
+      run_id: runId,
+      target_date: targetDate,
+      status: 'queued',
+      progress: 0,
+      current_step: '排队',
+      logs: [entry],
+      total_fetched: 0,
+      total_analyzed: 0,
+      created_at: now,
+      updated_at: now,
+    };
+  }
+
+  async getLatestPipelineRun(targetDate: string): Promise<PipelineRunRecord | undefined> {
+    if (!this.db) {
+      return undefined;
+    }
+
+    await this.ensureSchema();
+    const row = await this.db.prepare(`
+      SELECT run_id, target_date, status, progress, current_step, logs_json,
+             total_fetched, total_analyzed, error, created_at, updated_at, completed_at
+      FROM pipeline_runs
+      WHERE target_date = ?
+      ORDER BY updated_at DESC
+      LIMIT 1
+    `).bind(targetDate).first<PipelineRunDbRow>();
+
+    return row ? mapPipelineRunRow(row) : undefined;
+  }
+
+  createProgressSink(runId: string): PipelineProgressSink {
+    return {
+      update: update => this.updatePipelineRun(runId, update),
+    };
+  }
+
+  private async updatePipelineRun(runId: string, update: PipelineProgressUpdate): Promise<void> {
+    if (!this.db) {
+      return;
+    }
+
+    await this.ensureSchema();
+    const existing = await this.db.prepare(`
+      SELECT logs_json FROM pipeline_runs WHERE run_id = ?
+    `).bind(runId).first<{ logs_json: string }>();
+
+    const now = new Date().toISOString();
+    const logs = parsePipelineRunLogs(existing?.logs_json || '[]');
+    logs.push({
+      at: now,
+      level: update.level || 'info',
+      message: update.message,
+      progress: update.progress,
+      step: update.step,
+    });
+    const limitedLogs = logs.slice(-80);
+    const completedAt = update.status === 'completed' || update.status === 'failed' ? now : null;
+
+    await this.db.prepare(`
+      UPDATE pipeline_runs
+      SET status = ?,
+          progress = ?,
+          current_step = ?,
+          logs_json = ?,
+          total_fetched = COALESCE(?, total_fetched),
+          total_analyzed = COALESCE(?, total_analyzed),
+          error = ?,
+          updated_at = ?,
+          completed_at = COALESCE(?, completed_at)
+      WHERE run_id = ?
+    `).bind(
+      update.status,
+      Math.max(0, Math.min(100, Math.round(update.progress))),
+      update.step,
+      JSON.stringify(limitedLogs),
+      update.totalFetched ?? null,
+      update.totalAnalyzed ?? null,
+      update.error ?? null,
+      now,
+      completedAt,
+      runId,
+    ).run();
+  }
+
   private async ensureSchema(): Promise<void> {
     if (!this.db) {
       return;
@@ -310,6 +553,26 @@ class WorkerD1Storage implements PipelineStorage {
           processed_at TEXT NOT NULL
         )
       `,
+      `
+        CREATE TABLE IF NOT EXISTS pipeline_runs (
+          run_id TEXT PRIMARY KEY,
+          target_date TEXT NOT NULL,
+          status TEXT NOT NULL,
+          progress INTEGER NOT NULL DEFAULT 0,
+          current_step TEXT NOT NULL DEFAULT '',
+          logs_json TEXT NOT NULL DEFAULT '[]',
+          total_fetched INTEGER NOT NULL DEFAULT 0,
+          total_analyzed INTEGER NOT NULL DEFAULT 0,
+          error TEXT,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          completed_at TEXT
+        )
+      `,
+      `
+        CREATE INDEX IF NOT EXISTS idx_pipeline_runs_target_date
+          ON pipeline_runs(target_date, updated_at)
+      `,
     ];
 
     for (const statement of statements) {
@@ -337,6 +600,9 @@ function envConfigObject(env: Env): Record<string, unknown> {
 
   if (env.KEYWORDS !== undefined) {
     config.keywords = env.KEYWORDS;
+  }
+  if (env.SOURCES !== undefined) {
+    config.sources = JSON.parse(env.SOURCES) as unknown;
   }
   if (env.DOMAIN_RULES !== undefined) {
     config.domain_rules = JSON.parse(env.DOMAIN_RULES) as unknown;
@@ -453,12 +719,16 @@ async function loadConfig(env: Env): Promise<Config> {
 // 2. 创建 D1 存储；
 // 3. 读取历史记录；
 // 4. 启动 Pipeline。
-async function runPipeline(env: Env, targetDate?: Date) {
+async function runPipeline(env: Env, targetDate?: Date, runId?: string) {
   const config = await loadConfig(env);
   const storage = new WorkerD1Storage(env.PAPER_DB);
   config.processed_ids = await storage.loadHistory(config.history_file);
 
-  const pipeline = new Pipeline(config, storage);
+  const pipeline = new Pipeline(
+    config,
+    storage,
+    runId ? storage.createProgressSink(runId) : undefined,
+  );
   return await pipeline.run(targetDate);
 }
 
@@ -649,6 +919,10 @@ function formatDate(date?: Date): string | undefined {
   return `${year}-${month}-${day}`;
 }
 
+function todayBeijing(): string {
+  return formatDate(new Date(Date.now() + BEIJING_TIME_OFFSET_MS)) || '';
+}
+
 async function handleAnalysisResultsRequest(request: Request, env: Env): Promise<Response> {
   const unauthorized = assertAdmin(request, env);
   if (unauthorized) {
@@ -698,6 +972,55 @@ async function handleAnalysisResultsRequest(request: Request, env: Env): Promise
   });
 }
 
+async function handleRunStatusRequest(request: Request, env: Env): Promise<Response> {
+  const unauthorized = assertAdmin(request, env);
+  if (unauthorized) {
+    return unauthorized;
+  }
+
+  if (request.method !== 'GET') {
+    return jsonResponse(
+      {
+        ok: false,
+        error: 'Method not allowed',
+      },
+      { status: 405 },
+    );
+  }
+
+  const url = new URL(request.url);
+  const targetDateRaw = url.searchParams.get('target_date')?.trim();
+  if (!targetDateRaw) {
+    return jsonResponse(
+      {
+        ok: false,
+        error: '必须提供查询参数 target_date（YYYY-MM-DD）',
+      },
+      { status: 400 },
+    );
+  }
+
+  try {
+    parseTargetDate(targetDateRaw);
+  } catch (error) {
+    return jsonResponse(
+      {
+        ok: false,
+        error: (error as Error).message,
+      },
+      { status: 400 },
+    );
+  }
+
+  const storage = new WorkerD1Storage(env.PAPER_DB);
+  const run = await storage.getLatestPipelineRun(targetDateRaw);
+
+  return jsonResponse({
+    ok: true,
+    run: run || null,
+  });
+}
+
 // /run 是管理员手动调试入口，不是后台任务的常规启动方式。
 // 线上常规执行由 scheduled() 通过 Cron Trigger 自动启动。
 async function handleRunRequest(request: Request, env: Env): Promise<Response> {
@@ -724,32 +1047,50 @@ async function handleRunRequest(request: Request, env: Env): Promise<Response> {
       ? body.targetDate
       : undefined;
   const targetDate = parseTargetDate(url.searchParams.get('date') || bodyDate);
+  const targetDateStr = formatDate(targetDate) || todayBeijing();
   const sync = url.searchParams.get('sync') === 'true' || body.sync === true;
+  const storage = new WorkerD1Storage(env.PAPER_DB);
+  const run = await storage.createPipelineRun(targetDateStr, 'manual');
 
   if (!sync) {
-    const queued = await enqueueRun(env, {
-      type: 'run',
-      targetDate: formatDate(targetDate),
-      requestedAt: new Date().toISOString(),
-      source: 'manual',
-    });
+    try {
+      const queued = await enqueueRun(env, {
+        type: 'run',
+        runId: run.run_id,
+        targetDate: targetDateStr,
+        requestedAt: new Date().toISOString(),
+        source: 'manual',
+      });
 
-    if (queued) {
-      return jsonResponse(
-        {
-          ok: true,
-          queued: true,
-          mode: 'manual',
-          targetDate: formatDate(targetDate) || 'auto',
-        },
-        { status: 202 },
-      );
+      if (queued) {
+        return jsonResponse(
+          {
+            ok: true,
+            queued: true,
+            mode: 'manual',
+            targetDate: targetDateStr,
+            run,
+          },
+          { status: 202 },
+        );
+      }
+    } catch (error) {
+      await storage.createProgressSink(run.run_id).update({
+        targetDate: targetDateStr,
+        status: 'failed',
+        progress: 0,
+        step: '入队失败',
+        message: (error as Error).message,
+        level: 'error',
+        error: (error as Error).message,
+      });
+      throw error;
     }
   }
 
   // 没有 Queue 或 sync=true 时，直接在当前 HTTP 请求里跑完整流程。
-  const result = await runPipeline(env, targetDate);
-  return jsonResponse({ ok: true, queued: false, mode: 'manual', result });
+  const result = await runPipeline(env, parseTargetDate(targetDateStr), run.run_id);
+  return jsonResponse({ ok: true, queued: false, mode: 'manual', result, run });
 }
 
 export default {
@@ -796,6 +1137,10 @@ export default {
         return await handleAnalysisResultsRequest(request, env);
       }
 
+      if (url.pathname === '/api/run-status') {
+        return await handleRunStatusRequest(request, env);
+      }
+
       if (url.pathname === '/run') {
         return await handleRunRequest(request, env);
       }
@@ -808,6 +1153,7 @@ export default {
             'GET /health (requires ADMIN_TOKEN)',
             'GET /config (requires ADMIN_TOKEN)',
             'GET /api/analysis-results (requires ADMIN_TOKEN)',
+            'GET /api/run-status (requires ADMIN_TOKEN)',
             'GET /api/config (requires ADMIN_TOKEN)',
             'PUT /api/config (requires ADMIN_TOKEN)',
             'POST /api/config/validate (requires ADMIN_TOKEN)',
@@ -832,25 +1178,30 @@ export default {
   // Cron 定时入口。
   // wrangler.toml 里的 [triggers].crons 会决定它什么时候触发。
   async scheduled(controller: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
-    const message: RunMessage = {
-      type: 'run',
-      requestedAt: new Date().toISOString(),
-      source: 'scheduled',
-    };
-
     console.info(`Scheduled run triggered by cron: ${controller.cron}`);
 
     // waitUntil 告诉 Workers：即使 scheduled 函数返回了，也继续等待这个异步任务完成。
     ctx.waitUntil(
-      enqueueRun(env, message).then(async queued => {
+      (async () => {
+        const targetDate = todayBeijing();
+        const storage = new WorkerD1Storage(env.PAPER_DB);
+        const run = await storage.createPipelineRun(targetDate, 'scheduled');
+        const message: RunMessage = {
+          type: 'run',
+          runId: run.run_id,
+          targetDate,
+          requestedAt: new Date().toISOString(),
+          source: 'scheduled',
+        };
+        const queued = await enqueueRun(env, message);
         if (queued) {
           console.info('Scheduled run enqueued');
           return;
         }
 
         console.warn('PAPER_ANALYSIS_QUEUE 未绑定，scheduled 将直接执行 Pipeline');
-        await runPipeline(env);
-      }),
+        await runPipeline(env, parseTargetDate(targetDate), run.run_id);
+      })(),
     );
   },
 
@@ -858,11 +1209,31 @@ export default {
   // 每条消息触发一次 Pipeline；成功 ack，失败 retry。
   async queue(batch: MessageBatch<RunMessage>, env: Env): Promise<void> {
     for (const message of batch.messages) {
+      let runId = message.body.runId;
       try {
         const targetDate = parseTargetDate(message.body.targetDate);
-        await runPipeline(env, targetDate);
+        if (!runId) {
+          const storage = new WorkerD1Storage(env.PAPER_DB);
+          const run = await storage.createPipelineRun(formatDate(targetDate) || todayBeijing(), message.body.source);
+          runId = run.run_id;
+        }
+        await runPipeline(env, targetDate, runId);
         message.ack();
       } catch (error) {
+        if (runId) {
+          const targetDateRaw = message.body.targetDate || todayBeijing();
+          const storage = new WorkerD1Storage(env.PAPER_DB);
+          const latestRun = await storage.getLatestPipelineRun(targetDateRaw).catch(() => undefined);
+          await storage.createProgressSink(runId).update({
+            targetDate: targetDateRaw,
+            status: 'failed',
+            progress: latestRun?.progress ?? 0,
+            step: latestRun?.current_step || '失败',
+            message: (error as Error).message,
+            level: 'error',
+            error: (error as Error).message,
+          }).catch(() => undefined);
+        }
         console.error(`Queue message failed: ${(error as Error).message}`);
         message.retry({ delaySeconds: 60 });
       }
