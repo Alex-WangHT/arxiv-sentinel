@@ -701,7 +701,10 @@ function methodNotAllowed(): Response {
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
-
+    console.log("fetching backend:", url.toString());
+    console.log("base url:", env.BACKEND_BASE_URL);
+    console.log("has backend token:", !!env.BACKEND_ADMIN_TOKEN);
+    console.log("request path:", url.pathname);
     if (request.method === 'OPTIONS') {
       return new Response(null, { status: 204 });
     }

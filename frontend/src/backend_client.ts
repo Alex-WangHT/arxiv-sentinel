@@ -12,6 +12,7 @@ export interface BackendClientEnv {
   BACKEND_BASE_URL?: string;
   BACKEND_ADMIN_TOKEN?: string;
   ADMIN_TOKEN?: string;
+  BACKEND?: any;
 }
 
 function backendBaseUrl(env: BackendClientEnv): string {
@@ -142,7 +143,9 @@ export class BackendClient {
       init.body = request.body;
     }
 
-    return fetch(backendUrl, init);
+    return this.env.BACKEND
+          ? this.env.BACKEND.fetch(backendUrl, init)
+          : fetch(backendUrl, init);
   }
 
   private async request<T>(path: string, init: RequestInit = {}): Promise<T> {
@@ -150,13 +153,18 @@ export class BackendClient {
     const headers = new Headers(init.headers);
     headers.set('authorization', `Bearer ${backendAdminToken(this.env)}`);
 
-    const response = await fetch(url, {
-      ...init,
-      headers,
-    });
+    console.log("BACKEND FETCH URL:", url.toString());
+
+    const response = this.env.BACKEND
+                      ? await this.env.BACKEND.fetch(url, { ...init, headers })
+                      : await fetch(url, { ...init, headers });
+
+    console.log("BACKEND STATUS:", response.status);
 
     const body = await parseJsonBody(response);
+
     if (!response.ok) {
+      console.log("BACKEND ERROR BODY:", body);
       throw new BackendApiError(
         errorMessageFromBody(body, `后端请求失败，HTTP 状态码 ${response.status}`),
         response.status,

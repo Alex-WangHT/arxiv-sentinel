@@ -8,11 +8,9 @@ workers_dev = true
 BACKEND_BASE_URL = "https://paper-sniffer-backend.alexwang010112.workers.dev"
 APP_TITLE = "PaperSniffer"
 
+[dev]
+port = 8788
+
 [[services]]
 binding = "BACKEND"
 service = "paper-sniffer-backend"
-
-[dev]
-port = 8788
-[dev]
-port = 8788
