@@ -14,8 +14,6 @@ Usage:
 Environment knobs:
   BACKEND_PORT=8787
   FRONTEND_PORT=8788
-  FRONTEND_PASSWORD=<optional UI password>
-  SESSION_SECRET=<optional cookie signing secret>
   KEEP_ALIVE=true|false
   RUN_FULL_API_TESTS=true|false
 "@ | Write-Host
@@ -39,7 +37,6 @@ $KeepAlive = if ($env:KEEP_ALIVE) { $env:KEEP_ALIVE } else { "true" }
 $RunFullApiTests = if ($env:RUN_FULL_API_TESTS) { $env:RUN_FULL_API_TESTS } else { "false" }
 $AppTitle = if ($env:APP_TITLE) { $env:APP_TITLE } else { "PaperSniffer" }
 $LogDir = Join-Path $Root "script/.local-build-run"
-$CookieJar = Join-Path $LogDir "cookies.txt"
 
 $BackendWorker = $null
 $FrontendWorker = $null
@@ -141,14 +138,6 @@ function Write-DevVars {
     (Format-DevVar "BACKEND_ADMIN_TOKEN" $env:ADMIN_TOKEN),
     (Format-DevVar "APP_TITLE" $AppTitle)
   )
-
-  if ($env:FRONTEND_PASSWORD) {
-    $frontendLines += Format-DevVar "FRONTEND_PASSWORD" $env:FRONTEND_PASSWORD
-  }
-
-  if ($env:SESSION_SECRET) {
-    $frontendLines += Format-DevVar "SESSION_SECRET" $env:SESSION_SECRET
-  }
 
   Write-Utf8NoBomLines $FrontendVars $frontendLines
 
@@ -309,9 +298,8 @@ function Wait-ForBackend {
 function Wait-ForFrontend {
   Write-Host "==> Waiting for frontend at $FrontendBaseUrl"
 
-  $path = if ($env:FRONTEND_PASSWORD) { "/login" } else { "/status" }
   for ($i = 0; $i -lt 90; $i += 1) {
-    $result = Get-HttpStatus @("$FrontendBaseUrl$path")
+    $result = Get-HttpStatus @("$FrontendBaseUrl/status")
 
     if ($result.Status -eq "200") {
       Write-Host "==> Frontend is ready"
@@ -329,25 +317,6 @@ function Wait-ForFrontend {
 
   Show-LogTail $FrontendWorker
   throw "Frontend did not become ready in time."
-}
-
-function Login-FrontendIfNeeded {
-  if (!$env:FRONTEND_PASSWORD) {
-    return
-  }
-
-  Assert-Http `
-    "frontend login" `
-    "303" `
-    @(
-      "--request",
-      "POST",
-      "--cookie-jar",
-      $CookieJar,
-      "--data-urlencode",
-      "password=$env:FRONTEND_PASSWORD",
-      "$FrontendBaseUrl/login"
-    )
 }
 
 function Run-LightSmokeTests {
@@ -371,16 +340,9 @@ function Run-LightSmokeTests {
       "$BackendBaseUrl/api/config"
     )
 
-  Login-FrontendIfNeeded
-
-  $cookieArgs = @()
-  if ($env:FRONTEND_PASSWORD) {
-    $cookieArgs = @("--cookie", $CookieJar)
-  }
-
-  Assert-Http "frontend status page" "200" ($cookieArgs + @("$FrontendBaseUrl/status"))
-  Assert-Http "frontend dashboard page" "200" ($cookieArgs + @("$FrontendBaseUrl/"))
-  Assert-Http "frontend API proxy health" "200" ($cookieArgs + @("$FrontendBaseUrl/api/health"))
+  Assert-Http "frontend status page" "200" @("$FrontendBaseUrl/status")
+  Assert-Http "frontend dashboard page" "200" @("$FrontendBaseUrl/")
+  Assert-Http "frontend API proxy health" "200" @("$FrontendBaseUrl/api/health")
 }
 
 function Run-FullApiTestsIfRequested {
@@ -413,10 +375,6 @@ try {
   Require-Env
 
   New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
-  if (Test-Path -LiteralPath $CookieJar) {
-    Remove-Item -LiteralPath $CookieJar -Force
-  }
-
   Set-Location $Root
 
   Invoke-Step "Typechecking backend and frontend" "npm.cmd" @("run", "typecheck")

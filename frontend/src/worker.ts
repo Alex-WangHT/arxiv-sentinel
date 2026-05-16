@@ -1,14 +1,5 @@
 import { BackendClient, BackendClientEnv } from './backend_client';
 import {
-  clearSessionCookie,
-  frontendAuthEnabled,
-  htmlResponse,
-  isAuthenticated,
-  loginResponse,
-  redirectWithCookie,
-  requireLoginRedirect,
-} from './auth';
-import {
   AnalysisResultRecord,
   BackendApiError,
   EditableConfig,
@@ -21,7 +12,6 @@ import {
   renderConfigPage,
   renderDashboardPage,
   renderErrorPage,
-  renderLoginPage,
   renderRunPage,
   renderStatusPage,
   todayUtc,
@@ -29,12 +19,16 @@ import {
 
 interface Env extends BackendClientEnv {
   APP_TITLE?: string;
-  FRONTEND_PASSWORD?: string;
-  SESSION_SECRET?: string;
 }
 
 const VALID_DATE = /^\d{4}-\d{2}-\d{2}$/;
 const SCORE_VALUES: Score[] = ['HIGH', 'MEDIUM', 'LOW', 'IRRELEVANT'];
+const SCORE_TEXT: Record<Score, string> = {
+  HIGH: '高',
+  MEDIUM: '中',
+  LOW: '低',
+  IRRELEVANT: '无关',
+};
 
 function jsonResponse(data: unknown, init: ResponseInit = {}): Response {
   const headers = new Headers(init.headers);
@@ -44,6 +38,16 @@ function jsonResponse(data: unknown, init: ResponseInit = {}): Response {
   return new Response(JSON.stringify(data, null, 2), {
     ...init,
     headers,
+  });
+}
+
+function htmlResponse(html: string, status = 200): Response {
+  return new Response(html, {
+    status,
+    headers: {
+      'content-type': 'text/html; charset=utf-8',
+      'cache-control': 'no-store',
+    },
   });
 }
 
@@ -133,25 +137,25 @@ function markdownEscape(value: string): string {
 
 function renderMarkdown(date: string, results: AnalysisResultRecord[]): string {
   const sections = results.map(result => [
-    `## ${result.score}: ${markdownEscape(result.title)}`,
+    `## ${SCORE_TEXT[result.score]}: ${markdownEscape(result.title)}`,
     '',
     `- ID: ${markdownEscape(result.id)}`,
-    `- URL: ${markdownEscape(result.paper_url)}`,
-    `- Published: ${markdownEscape(result.published.slice(0, 10))}`,
-    `- Authors: ${markdownEscape(result.authors.join(', ') || 'Unknown')}`,
-    `- Categories: ${markdownEscape(result.categories.join(', '))}`,
-    `- Keywords: ${markdownEscape(result.keywords.join(', '))}`,
+    `- 链接: ${markdownEscape(result.paper_url)}`,
+    `- 发布日期: ${markdownEscape(result.published.slice(0, 10))}`,
+    `- 作者: ${markdownEscape(result.authors.join(', ') || '未知')}`,
+    `- 分类: ${markdownEscape(result.categories.join(', '))}`,
+    `- 关键词: ${markdownEscape(result.keywords.join(', '))}`,
     '',
-    `Reason: ${markdownEscape(result.reason)}`,
+    `推荐理由: ${markdownEscape(result.reason)}`,
     '',
-    `Core methods: ${markdownEscape(result.core_methods)}`,
+    `核心方法: ${markdownEscape(result.core_methods)}`,
     '',
-    `Problem: ${markdownEscape(result.problem)}`,
+    `问题: ${markdownEscape(result.problem)}`,
     '',
-    `Abstract: ${markdownEscape(result.abstract)}`,
+    `摘要: ${markdownEscape(result.abstract)}`,
   ].join('\n'));
 
-  return [`# PaperSniffer results for ${date}`, '', ...sections].join('\n\n');
+  return [`# PaperSniffer ${date} 论文结果`, '', ...sections].join('\n\n');
 }
 
 async function loadFilteredResults(
@@ -177,7 +181,6 @@ async function loadFilteredResults(
 
 async function handleDashboard(request: Request, env: Env): Promise<Response> {
   const client = new BackendClient(env);
-  const authEnabled = frontendAuthEnabled(env);
 
   try {
     const { filters, allResults, results, selected } = await loadFilteredResults(request, client);
@@ -186,7 +189,6 @@ async function handleDashboard(request: Request, env: Env): Promise<Response> {
       results,
       totalCount: allResults.length,
       selected,
-      authEnabled,
     }));
   } catch (error) {
     const filters = parseFilters(request);
@@ -198,7 +200,6 @@ async function handleDashboard(request: Request, env: Env): Promise<Response> {
         kind: 'error',
         message: errorMessage(error),
       },
-      authEnabled,
     }), 502);
   }
 }
@@ -216,25 +217,44 @@ function optionalNumber(form: FormData, name: string): number | undefined {
 
   const value = Number(raw);
   if (!Number.isFinite(value)) {
-    throw new Error(`${name} must be a number`);
+    throw new Error(`${name} 必须是数字`);
   }
   return value;
 }
 
+function formStrings(form: FormData, name: string): string[] {
+  return form.getAll(name)
+    .map(value => String(value).trim())
+    .filter(Boolean);
+}
+
+function splitList(value: string): string[] {
+  return value
+    .split(/[\r\n,，;；]+/)
+    .map(item => item.trim())
+    .filter(Boolean);
+}
+
 async function parseConfigForm(request: Request): Promise<EditableConfig> {
   const form = await request.formData();
-  const keywords = String(form.get('keywords') || '')
-    .split(/\r?\n|,/)
-    .map(value => value.trim())
-    .filter(Boolean);
-  const domainRulesRaw = String(form.get('domain_rules_json') || '[]').trim();
-  const domainRules = JSON.parse(domainRulesRaw || '[]') as EditableConfig['domain_rules'];
+  const keywords = formStrings(form, 'keyword');
+  const domainCategories = form.getAll('domain_category').map(value => String(value).trim());
+  const domainModes = form.getAll('domain_mode').map(value => String(value).trim());
+  const domainFilters = form.getAll('domain_filter_categories').map(value => String(value).trim());
   const threshold = String(form.get('relevance_threshold') || 'MEDIUM').toUpperCase() as Score;
   const logLevel = optionalString(form, 'log_level') as EditableConfig['log_level'];
 
   if (!SCORE_VALUES.includes(threshold)) {
-    throw new Error('relevance_threshold is invalid');
+    throw new Error('相关性阈值无效');
   }
+
+  const domainRules = domainCategories
+    .map((category, index) => ({
+      category,
+      mode: domainModes[index] === 'categories_filter' ? 'categories_filter' : 'accept_all',
+      filter_categories: splitList(domainFilters[index] || ''),
+    } satisfies EditableConfig['domain_rules'][number]))
+    .filter(rule => rule.category);
 
   return {
     keywords,
@@ -255,7 +275,6 @@ async function parseConfigForm(request: Request): Promise<EditableConfig> {
 
 async function handleConfigGet(env: Env, flash?: Flash, status = 200): Promise<Response> {
   const client = new BackendClient(env);
-  const authEnabled = frontendAuthEnabled(env);
 
   try {
     const response = await client.config();
@@ -263,22 +282,20 @@ async function handleConfigGet(env: Env, flash?: Flash, status = 200): Promise<R
       response,
       config: response.config,
       flash,
-      authEnabled,
     }), status);
   } catch (error) {
-    return htmlResponse(renderErrorPage('Configuration unavailable', errorMessage(error), authEnabled), 502);
+    return htmlResponse(renderErrorPage('配置不可用', errorMessage(error)), 502);
   }
 }
 
 async function handleConfigPost(request: Request, env: Env, mode: 'validate' | 'save'): Promise<Response> {
   const client = new BackendClient(env);
-  const authEnabled = frontendAuthEnabled(env);
   let draft: EditableConfig;
 
   try {
     draft = await parseConfigForm(request);
   } catch (error) {
-    return htmlResponse(renderErrorPage('Invalid form data', errorMessage(error), authEnabled), 400);
+    return htmlResponse(renderErrorPage('表单数据无效', errorMessage(error)), 400);
   }
 
   try {
@@ -290,9 +307,8 @@ async function handleConfigPost(request: Request, env: Env, mode: 'validate' | '
       config: response.config,
       flash: {
         kind: 'success',
-        message: mode === 'validate' ? 'Configuration is valid.' : 'Configuration saved to KV.',
+        message: mode === 'validate' ? '配置校验通过。' : '配置已保存到 KV。',
       },
-      authEnabled,
     }));
   } catch (error) {
     return htmlResponse(renderConfigPage({
@@ -301,7 +317,6 @@ async function handleConfigPost(request: Request, env: Env, mode: 'validate' | '
         kind: 'error',
         message: errorMessage(error),
       },
-      authEnabled,
     }), 400);
   }
 }
@@ -311,7 +326,6 @@ async function handleRunGet(request: Request, env: Env): Promise<Response> {
   const date = url.searchParams.get('date') || todayUtc();
   return htmlResponse(renderRunPage({
     defaultDate: VALID_DATE.test(date) ? date : todayUtc(),
-    authEnabled: frontendAuthEnabled(env),
   }));
 }
 
@@ -331,9 +345,8 @@ async function handleRunPost(request: Request, env: Env): Promise<Response> {
       response,
       flash: {
         kind: 'success',
-        message: response.queued ? 'Run was queued.' : 'Run completed.',
+        message: response.queued ? '任务已加入队列。' : '任务已完成。',
       },
-      authEnabled: frontendAuthEnabled(env),
     }), response.queued ? 202 : 200);
   } catch (error) {
     return htmlResponse(renderRunPage({
@@ -342,7 +355,6 @@ async function handleRunPost(request: Request, env: Env): Promise<Response> {
         kind: 'error',
         message: errorMessage(error),
       },
-      authEnabled: frontendAuthEnabled(env),
     }), 502);
   }
 }
@@ -350,20 +362,19 @@ async function handleRunPost(request: Request, env: Env): Promise<Response> {
 async function handleStatus(env: Env): Promise<Response> {
   const client = new BackendClient(env);
   const errors: string[] = [];
-  const authEnabled = frontendAuthEnabled(env);
   let health;
   let config;
 
   try {
     health = await client.health();
   } catch (error) {
-    errors.push(`Health check failed: ${errorMessage(error)}`);
+    errors.push(`健康检查失败：${errorMessage(error)}`);
   }
 
   try {
     config = await client.config();
   } catch (error) {
-    errors.push(`Config read failed: ${errorMessage(error)}`);
+    errors.push(`读取配置失败：${errorMessage(error)}`);
   }
 
   return htmlResponse(renderStatusPage({
@@ -371,7 +382,6 @@ async function handleStatus(env: Env): Promise<Response> {
     config,
     backendBaseUrl: env.BACKEND_BASE_URL,
     errors,
-    authEnabled,
   }), errors.length > 0 ? 502 : 200);
 }
 
@@ -417,7 +427,7 @@ async function handleExport(request: Request, env: Env, format: 'json' | 'markdo
 function methodNotAllowed(): Response {
   return jsonResponse({
     ok: false,
-    error: 'Method not allowed',
+    error: '不支持的请求方法',
   }, { status: 405 });
 }
 
@@ -429,28 +439,8 @@ export default {
       return new Response(null, { status: 204 });
     }
 
-    if (url.pathname === '/login') {
-      if (request.method === 'GET') {
-        if (await isAuthenticated(request, env)) {
-          return Response.redirect(new URL('/', request.url), 303);
-        }
-        return htmlResponse(renderLoginPage());
-      }
-      if (request.method === 'POST') {
-        return loginResponse(request, env);
-      }
-      return methodNotAllowed();
-    }
-
-    if (url.pathname === '/logout') {
-      if (request.method !== 'POST') {
-        return methodNotAllowed();
-      }
-      return redirectWithCookie('/login', request, clearSessionCookie());
-    }
-
-    if (!(await isAuthenticated(request, env))) {
-      return requireLoginRedirect(request);
+    if (url.pathname === '/login' || url.pathname === '/logout') {
+      return Response.redirect(new URL('/', request.url), 303);
     }
 
     try {
@@ -522,15 +512,13 @@ export default {
       }
 
       return htmlResponse(renderErrorPage(
-        'Not found',
-        `No frontend route exists for ${escapeHtml(url.pathname)}.`,
-        frontendAuthEnabled(env),
+        '页面不存在',
+        `前端没有这个路径：${escapeHtml(url.pathname)}。`,
       ), 404);
     } catch (error) {
       return htmlResponse(renderErrorPage(
-        'Unexpected error',
+        '发生错误',
         errorMessage(error),
-        frontendAuthEnabled(env),
       ), 500);
     }
   },

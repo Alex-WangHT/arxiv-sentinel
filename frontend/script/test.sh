@@ -37,31 +37,7 @@ case "$MODE" in
 esac
 
 BASE_URL="${BASE_URL%/}"
-COOKIE_JAR="$(mktemp)"
-cleanup() {
-  rm -f "$COOKIE_JAR"
-}
-trap cleanup EXIT
-
 curl_common=(--silent --show-error --connect-timeout 15 --max-time 30)
-
-if [[ -n "${FRONTEND_PASSWORD:-}" ]]; then
-  echo "==> Logging in to frontend"
-  status="$(
-    curl "${curl_common[@]}" \
-      --request POST \
-      --cookie-jar "$COOKIE_JAR" \
-      --output /tmp/paper-sniffer-login.out \
-      --write-out "%{http_code}" \
-      --data-urlencode "password=$FRONTEND_PASSWORD" \
-      "$BASE_URL/login"
-  )"
-  [[ "$status" == "303" ]] || {
-    echo "FAIL login expected 303, got $status" >&2
-    cat /tmp/paper-sniffer-login.out >&2 || true
-    exit 1
-  }
-fi
 
 request() {
   local path="$1"
@@ -71,7 +47,6 @@ request() {
   local status
   status="$(
     curl "${curl_common[@]}" \
-      --cookie "$COOKIE_JAR" \
       --output "$output" \
       --write-out "%{http_code}" \
       "$BASE_URL$path"

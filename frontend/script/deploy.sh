@@ -18,8 +18,6 @@ REQUIRED_VARS=(
 )
 
 OPTIONAL_VARS=(
-  FRONTEND_PASSWORD
-  SESSION_SECRET
   APP_TITLE
 )
 
@@ -29,8 +27,6 @@ Usage:
   BACKEND_BASE_URL=<backend-url> BACKEND_ADMIN_TOKEN=<token> bash frontend/script/deploy.sh <local|cloud>
 
 Optional:
-  FRONTEND_PASSWORD=<password>
-  SESSION_SECRET=<session-signing-secret>
   APP_TITLE=PaperSniffer
 EOF
   exit 1

@@ -16,7 +16,7 @@ export interface BackendClientEnv {
 function backendBaseUrl(env: BackendClientEnv): string {
   const baseUrl = env.BACKEND_BASE_URL?.trim();
   if (!baseUrl) {
-    throw new Error('BACKEND_BASE_URL is not configured');
+    throw new Error('未配置后端地址 BACKEND_BASE_URL');
   }
   return baseUrl.endsWith('/') ? baseUrl : `${baseUrl}/`;
 }
@@ -24,7 +24,7 @@ function backendBaseUrl(env: BackendClientEnv): string {
 function backendAdminToken(env: BackendClientEnv): string {
   const token = env.BACKEND_ADMIN_TOKEN?.trim() || env.ADMIN_TOKEN?.trim();
   if (!token) {
-    throw new Error('BACKEND_ADMIN_TOKEN is not configured');
+    throw new Error('未配置后端访问令牌 BACKEND_ADMIN_TOKEN');
   }
   return token;
 }
@@ -151,7 +151,7 @@ export class BackendClient {
     const body = await parseJsonBody(response);
     if (!response.ok) {
       throw new BackendApiError(
-        errorMessageFromBody(body, `Backend request failed with HTTP ${response.status}`),
+        errorMessageFromBody(body, `后端请求失败，HTTP 状态码 ${response.status}`),
         response.status,
         body,
       );

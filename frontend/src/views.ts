@@ -11,11 +11,25 @@ import {
 
 const SCORE_ORDER: Score[] = ['HIGH', 'MEDIUM', 'LOW', 'IRRELEVANT'];
 const SCORE_TEXT: Record<Score, string> = {
-  HIGH: 'High',
-  MEDIUM: 'Medium',
-  LOW: 'Low',
-  IRRELEVANT: 'Irrelevant',
+  HIGH: '高',
+  MEDIUM: '中',
+  LOW: '低',
+  IRRELEVANT: '无关',
 };
+
+const CONFIG_SOURCE_TEXT: Record<string, string> = {
+  kv: 'KV',
+  env: '环境变量',
+  default: '默认配置',
+};
+
+function sourceText(source: string | undefined): string {
+  return source ? CONFIG_SOURCE_TEXT[source] || source : '校验结果';
+}
+
+function scoreText(score: string | undefined): string {
+  return score && score in SCORE_TEXT ? SCORE_TEXT[score as Score] : '未知';
+}
 
 export function todayUtc(): string {
   return new Date().toISOString().slice(0, 10);
@@ -55,17 +69,16 @@ function pageShell(options: {
   title: string;
   current: 'dashboard' | 'config' | 'run' | 'status';
   body: string;
-  authEnabled?: boolean;
 }): string {
   const nav = [
-    ['dashboard', '/', 'Dashboard'],
-    ['config', '/config', 'Config'],
-    ['run', '/run', 'Run'],
-    ['status', '/status', 'Status'],
+    ['dashboard', '/', '论文雷达'],
+    ['config', '/config', '配置'],
+    ['run', '/run', '运行'],
+    ['status', '/status', '状态'],
   ] as const;
 
   return `<!doctype html>
-<html lang="en">
+<html lang="zh-CN">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -79,18 +92,18 @@ function pageShell(options: {
         <span class="brand-mark">PS</span>
         <span>
           <strong>PaperSniffer</strong>
-          <small>Research radar</small>
+          <small>科研论文雷达</small>
         </span>
       </a>
       <nav class="nav">
         ${nav.map(([key, href, label]) => `<a class="${options.current === key ? 'active' : ''}" href="${href}">${label}</a>`).join('')}
       </nav>
-      ${options.authEnabled ? '<form class="logout" method="post" action="/logout"><button type="submit">Sign out</button></form>' : ''}
     </aside>
     <main class="main">
       ${options.body}
     </main>
   </div>
+  <script>${APP_JS}</script>
 </body>
 </html>`;
 }
@@ -101,7 +114,7 @@ function scoreClass(score: string): string {
 
 function tagList(values: string[], className = 'tag'): string {
   if (values.length === 0) {
-    return '<span class="muted">None</span>';
+    return '<span class="muted">无</span>';
   }
 
   return values.map(value => `<span class="${className}">${escapeHtml(value)}</span>`).join('');
@@ -129,7 +142,7 @@ function renderScoreOptions(selected: string): string {
   const options = ['ALL', ...SCORE_ORDER];
   return options.map(score => {
     const value = score === 'ALL' ? '' : score;
-    const label = score === 'ALL' ? 'All scores' : SCORE_TEXT[score as Score];
+    const label = score === 'ALL' ? '全部评分' : SCORE_TEXT[score as Score];
     return `<option value="${value}" ${selected === value ? 'selected' : ''}>${label}</option>`;
   }).join('');
 }
@@ -140,28 +153,28 @@ function renderDashboardToolbar(filters: UiFilters): string {
 
   return `<form class="toolbar" method="get" action="/">
     <label>
-      <span>Date</span>
+      <span>日期</span>
       <input type="date" name="date" value="${escapeAttr(filters.date)}">
     </label>
     <label class="grow">
-      <span>Search</span>
-      <input type="search" name="q" value="${escapeAttr(filters.q)}" placeholder="title, author, method, problem">
+      <span>搜索</span>
+      <input type="search" name="q" value="${escapeAttr(filters.q)}" placeholder="标题、作者、方法、问题">
     </label>
     <label>
-      <span>Score</span>
+      <span>评分</span>
       <select name="score">${renderScoreOptions(filters.score)}</select>
     </label>
     <label>
-      <span>Category</span>
+      <span>分类</span>
       <input name="category" value="${escapeAttr(filters.category)}" placeholder="cs.CL">
     </label>
     <label>
-      <span>Keyword</span>
+      <span>关键词</span>
       <input name="keyword" value="${escapeAttr(filters.keyword)}" placeholder="agent">
     </label>
-    <button type="submit">Refresh</button>
-    <a class="button secondary" href="${exportMd}">Markdown</a>
-    <a class="button secondary" href="${exportJson}">JSON</a>
+    <button type="submit">刷新</button>
+    <a class="button secondary" href="${exportMd}">导出 Markdown</a>
+    <a class="button secondary" href="${exportJson}">导出 JSON</a>
   </form>`;
 }
 
@@ -172,8 +185,8 @@ function renderStats(results: AnalysisResultRecord[], totalCount: number): strin
   }
 
   return `<section class="stats">
-    <div><strong>${results.length}</strong><span>Filtered</span></div>
-    <div><strong>${totalCount}</strong><span>Total</span></div>
+    <div><strong>${results.length}</strong><span>筛选结果</span></div>
+    <div><strong>${totalCount}</strong><span>全部论文</span></div>
     ${SCORE_ORDER.map(score => `<div><strong>${counts.get(score) || 0}</strong><span>${SCORE_TEXT[score]}</span></div>`).join('')}
   </section>`;
 }
@@ -181,12 +194,12 @@ function renderStats(results: AnalysisResultRecord[], totalCount: number): strin
 function renderPaperList(results: AnalysisResultRecord[], filters: UiFilters, selected?: AnalysisResultRecord): string {
   if (results.length === 0) {
     return `<section class="empty">
-      <h2>No papers found</h2>
-      <p>Try another date or loosen the filters.</p>
+      <h2>未找到论文</h2>
+      <p>可以换一个日期，或者放宽筛选条件。</p>
     </section>`;
   }
 
-  return `<section class="paper-list" aria-label="Paper results">
+  return `<section class="paper-list" aria-label="论文结果">
     ${results.map(result => {
       const href = `/${queryString(filters, { selected: result.id })}`;
       const active = selected?.id === result.id ? ' active' : '';
@@ -207,33 +220,33 @@ function renderPaperList(results: AnalysisResultRecord[], filters: UiFilters, se
 function renderDetail(result?: AnalysisResultRecord): string {
   if (!result) {
     return `<aside class="detail-panel">
-      <h2>Select a paper</h2>
-      <p class="muted">Open a result to inspect its methods, problem framing, and keywords.</p>
+      <h2>请选择一篇论文</h2>
+      <p class="muted">打开结果后，可以查看方法、问题定义、关键词和推荐理由。</p>
     </aside>`;
   }
 
   return `<aside class="detail-panel">
     <div class="paper-head">
       <span class="score ${scoreClass(result.score)}">${SCORE_TEXT[result.score]}</span>
-      <a class="button secondary" href="${escapeAttr(result.paper_url)}" target="_blank" rel="noreferrer">Open paper</a>
+      <a class="button secondary" href="${escapeAttr(result.paper_url)}" target="_blank" rel="noreferrer">打开论文</a>
     </div>
     <h2>${escapeHtml(result.title)}</h2>
     <dl class="details">
-      <dt>Authors</dt>
-      <dd>${escapeHtml(result.authors.join(', ') || 'Unknown')}</dd>
-      <dt>Published</dt>
+      <dt>作者</dt>
+      <dd>${escapeHtml(result.authors.join(', ') || '未知')}</dd>
+      <dt>发布日期</dt>
       <dd>${escapeHtml(result.published.slice(0, 10))}</dd>
-      <dt>Categories</dt>
+      <dt>分类</dt>
       <dd class="tags">${tagList(result.categories)}</dd>
-      <dt>Keywords</dt>
+      <dt>关键词</dt>
       <dd class="tags">${tagList(result.keywords, 'tag keyword')}</dd>
-      <dt>Why it matters</dt>
+      <dt>推荐理由</dt>
       <dd>${escapeHtml(result.reason)}</dd>
-      <dt>Core methods</dt>
+      <dt>核心方法</dt>
       <dd>${escapeHtml(result.core_methods)}</dd>
-      <dt>Problem</dt>
+      <dt>问题</dt>
       <dd>${escapeHtml(result.problem)}</dd>
-      <dt>Abstract</dt>
+      <dt>摘要</dt>
       <dd>${escapeHtml(result.abstract)}</dd>
     </dl>
   </aside>`;
@@ -245,15 +258,14 @@ export function renderDashboardPage(options: {
   totalCount: number;
   selected?: AnalysisResultRecord;
   flash?: Flash;
-  authEnabled?: boolean;
 }): string {
   const body = `${renderFlash(options.flash)}
   <header class="page-header">
     <div>
-      <p class="eyebrow">Paper radar</p>
-      <h1>${escapeHtml(options.filters.date)} analysis</h1>
+      <p class="eyebrow">论文雷达</p>
+      <h1>${escapeHtml(options.filters.date)} 分析结果</h1>
     </div>
-    <a class="button" href="/run?date=${encodeURIComponent(options.filters.date)}">Run now</a>
+    <a class="button" href="/run?date=${encodeURIComponent(options.filters.date)}">立即运行</a>
   </header>
   ${renderDashboardToolbar(options.filters)}
   ${renderStats(options.results, options.totalCount)}
@@ -263,10 +275,9 @@ export function renderDashboardPage(options: {
   </div>`;
 
   return pageShell({
-    title: 'PaperSniffer Dashboard',
+    title: 'PaperSniffer 论文雷达',
     current: 'dashboard',
     body,
-    authEnabled: options.authEnabled,
   });
 }
 
@@ -281,69 +292,123 @@ function configText(config: EditableConfig, key: keyof EditableConfig): string {
   return String(value);
 }
 
-function renderConfigForm(config: EditableConfig): string {
-  const domainRulesJson = JSON.stringify(config.domain_rules || [], null, 2);
+function renderKeywordRows(keywords: string[]): string {
+  const rows = keywords.length > 0 ? keywords : [''];
 
-  return `<form class="form-grid" method="post">
-    <label class="wide">
-      <span>Keywords</span>
-      <textarea name="keywords" rows="5">${escapeHtml((config.keywords || []).join('\n'))}</textarea>
-    </label>
-    <label class="wide">
-      <span>Domain rules JSON</span>
-      <textarea name="domain_rules_json" rows="9">${escapeHtml(domainRulesJson)}</textarea>
+  return `<section class="field-group wide" data-repeat-list data-input-name="keyword" data-placeholder="例如：large language model">
+    <div class="subhead">
+      <div>
+        <h2>关键词</h2>
+        <p>每行一个关键词，用来筛选论文主题。</p>
+      </div>
+      <button class="button secondary mini" type="button" data-add-row>添加关键词</button>
+    </div>
+    <div class="list-rows" data-list-rows>
+      ${rows.map(keyword => `<div class="list-row">
+        <input name="keyword" value="${escapeAttr(keyword)}" placeholder="例如：agent">
+        <button class="button secondary danger mini" type="button" data-remove-row>删除</button>
+      </div>`).join('')}
+    </div>
+  </section>`;
+}
+
+function renderDomainRuleRow(rule: EditableConfig['domain_rules'][number]): string {
+  const filterHidden = rule.mode === 'categories_filter' ? '' : ' is-hidden';
+
+  return `<article class="rule-card" data-domain-rule>
+    <label>
+      <span>arXiv 分类</span>
+      <input name="domain_category" value="${escapeAttr(rule.category)}" placeholder="例如：cs.CL">
     </label>
     <label>
-      <span>Relevance threshold</span>
+      <span>匹配方式</span>
+      <select name="domain_mode" data-domain-mode>
+        <option value="accept_all" ${rule.mode === 'accept_all' ? 'selected' : ''}>接收该分类下全部论文</option>
+        <option value="categories_filter" ${rule.mode === 'categories_filter' ? 'selected' : ''}>只接收同时属于指定交叉分类的论文</option>
+      </select>
+    </label>
+    <label class="filter-field${filterHidden}" data-filter-field>
+      <span>交叉分类</span>
+      <input name="domain_filter_categories" value="${escapeAttr((rule.filter_categories || []).join(', '))}" placeholder="例如：cs.AI, cs.LG">
+    </label>
+    <button class="button secondary danger mini rule-delete" type="button" data-remove-domain-rule>删除规则</button>
+  </article>`;
+}
+
+function renderDomainRuleRows(rules: EditableConfig['domain_rules']): string {
+  const displayRules = rules.length > 0
+    ? rules
+    : [{ category: '', mode: 'accept_all' as const, filter_categories: [] }];
+
+  return `<section class="field-group wide" data-domain-rules>
+    <div class="subhead">
+      <div>
+        <h2>领域规则</h2>
+        <p>用分类和下拉选项控制 arXiv 抓取范围，不需要编辑 JSON。</p>
+      </div>
+      <button class="button secondary mini" type="button" data-add-domain-rule>添加规则</button>
+    </div>
+    <div class="rule-list" data-domain-rule-list>
+      ${displayRules.map(renderDomainRuleRow).join('')}
+    </div>
+  </section>`;
+}
+
+function renderConfigForm(config: EditableConfig): string {
+  return `<form class="form-grid" method="post">
+    ${renderKeywordRows(config.keywords || [])}
+    ${renderDomainRuleRows(config.domain_rules || [])}
+    <label>
+      <span>相关性阈值</span>
       <select name="relevance_threshold">
         ${SCORE_ORDER.map(score => `<option value="${score}" ${config.relevance_threshold === score ? 'selected' : ''}>${SCORE_TEXT[score]}</option>`).join('')}
       </select>
     </label>
     <label>
-      <span>Model</span>
+      <span>模型</span>
       <input name="openai_model" value="${escapeAttr(configText(config, 'openai_model'))}" required>
     </label>
     <label>
-      <span>Base URL</span>
+      <span>模型服务地址</span>
       <input name="openai_base_url" value="${escapeAttr(configText(config, 'openai_base_url'))}" placeholder="https://api.openai.com/v1">
     </label>
     <label>
-      <span>Max results per category</span>
+      <span>每个分类最多抓取</span>
       <input type="number" min="1" max="200" name="max_results_per_category" value="${escapeAttr(configText(config, 'max_results_per_category'))}">
     </label>
     <label>
-      <span>Max concurrent requests</span>
+      <span>最大并发请求</span>
       <input type="number" min="1" max="50" name="max_concurrent_requests" value="${escapeAttr(configText(config, 'max_concurrent_requests'))}">
     </label>
     <label>
-      <span>Log level</span>
+      <span>日志等级</span>
       <select name="log_level">
         ${['DEBUG', 'INFO', 'WARNING', 'ERROR'].map(level => `<option value="${level}" ${config.log_level === level ? 'selected' : ''}>${level}</option>`).join('')}
       </select>
     </label>
     <label>
-      <span>Output dir</span>
+      <span>输出目录</span>
       <input name="output_dir" value="${escapeAttr(configText(config, 'output_dir'))}">
     </label>
     <label>
-      <span>Prompts dir</span>
+      <span>提示词目录</span>
       <input name="prompts_dir" value="${escapeAttr(configText(config, 'prompts_dir'))}">
     </label>
     <label>
-      <span>History file</span>
+      <span>历史文件名</span>
       <input name="history_file" value="${escapeAttr(configText(config, 'history_file'))}">
     </label>
     <label class="wide">
-      <span>System prompt</span>
+      <span>系统提示词</span>
       <textarea name="prompt_system" rows="5">${escapeHtml(configText(config, 'prompt_system'))}</textarea>
     </label>
     <label class="wide">
-      <span>User prompt template</span>
+      <span>用户提示词模板</span>
       <textarea name="prompt_user_template" rows="6">${escapeHtml(configText(config, 'prompt_user_template'))}</textarea>
     </label>
     <div class="actions wide">
-      <button formaction="/config/validate" type="submit">Validate</button>
-      <button formaction="/config/save" type="submit">Save to KV</button>
+      <button formaction="/config/validate" type="submit">校验配置</button>
+      <button formaction="/config/save" type="submit">保存到 KV</button>
     </div>
   </form>`;
 }
@@ -352,17 +417,16 @@ export function renderConfigPage(options: {
   config: EditableConfig;
   response?: ConfigResponse;
   flash?: Flash;
-  authEnabled?: boolean;
 }): string {
   const source = options.response
-    ? `<div class="meta-bar"><span>Source: <strong>${escapeHtml(options.response.source)}</strong></span><span>Key: ${escapeHtml(options.response.key)}</span></div>`
+    ? `<div class="meta-bar"><span>配置来源：<strong>${escapeHtml(sourceText(options.response.source))}</strong></span><span>KV Key：${escapeHtml(options.response.key || '未写入')}</span></div>`
     : '';
 
   const body = `${renderFlash(options.flash)}
   <header class="page-header">
     <div>
-      <p class="eyebrow">Runtime config</p>
-      <h1>Configuration</h1>
+      <p class="eyebrow">运行配置</p>
+      <h1>配置管理</h1>
     </div>
   </header>
   ${source}
@@ -371,10 +435,9 @@ export function renderConfigPage(options: {
   </section>`;
 
   return pageShell({
-    title: 'PaperSniffer Config',
+    title: 'PaperSniffer 配置',
     current: 'config',
     body,
-    authEnabled: options.authEnabled,
   });
 }
 
@@ -382,46 +445,44 @@ export function renderRunPage(options: {
   defaultDate: string;
   response?: RunResponse;
   flash?: Flash;
-  authEnabled?: boolean;
 }): string {
   const response = options.response
     ? `<section class="panel">
-        <h2>Run response</h2>
+        <h2>运行结果</h2>
         ${options.response.queued
-          ? `<p>Queued for ${escapeHtml(options.response.targetDate)}.</p><a class="button secondary" href="/?date=${encodeURIComponent(options.response.targetDate)}">View results</a>`
-          : `<p>Completed ${escapeHtml(options.response.result.date)}. Fetched ${options.response.result.total_fetched}, kept ${options.response.result.total_filtered}.</p><a class="button secondary" href="/?date=${encodeURIComponent(options.response.result.date)}">View results</a>`}
+          ? `<p>${escapeHtml(options.response.targetDate)} 的任务已进入队列。</p><a class="button secondary" href="/?date=${encodeURIComponent(options.response.targetDate)}">查看结果</a>`
+          : `<p>${escapeHtml(options.response.result.date)} 已完成。抓取 ${options.response.result.total_fetched} 篇，保留 ${options.response.result.total_filtered} 篇。</p><a class="button secondary" href="/?date=${encodeURIComponent(options.response.result.date)}">查看结果</a>`}
       </section>`
     : '';
 
   const body = `${renderFlash(options.flash)}
   <header class="page-header">
     <div>
-      <p class="eyebrow">Manual control</p>
-      <h1>Run pipeline</h1>
+      <p class="eyebrow">手动控制</p>
+      <h1>运行流水线</h1>
     </div>
   </header>
   <section class="panel narrow">
     <form class="form-grid" method="post" action="/run">
       <label>
-        <span>Target date</span>
+        <span>目标日期</span>
         <input type="date" name="date" value="${escapeAttr(options.defaultDate)}">
       </label>
       <label class="check">
         <input type="checkbox" name="sync" value="true">
-        <span>Run synchronously for debugging</span>
+        <span>同步运行，用于调试</span>
       </label>
       <div class="actions wide">
-        <button type="submit">Start run</button>
+        <button type="submit">开始运行</button>
       </div>
     </form>
   </section>
   ${response}`;
 
   return pageShell({
-    title: 'PaperSniffer Run',
+    title: 'PaperSniffer 运行',
     current: 'run',
     body,
-    authEnabled: options.authEnabled,
   });
 }
 
@@ -430,77 +491,45 @@ export function renderStatusPage(options: {
   config?: ConfigResponse;
   backendBaseUrl?: string;
   errors: string[];
-  authEnabled?: boolean;
 }): string {
   const body = `${renderFlash(options.errors.length > 0 ? { kind: 'error', message: options.errors.join(' ') } : undefined)}
   <header class="page-header">
     <div>
-      <p class="eyebrow">System status</p>
-      <h1>Status</h1>
+      <p class="eyebrow">系统状态</p>
+      <h1>状态</h1>
     </div>
   </header>
   <section class="status-grid">
     <div class="panel">
-      <h2>Backend</h2>
+      <h2>后端</h2>
       <dl class="details compact">
-        <dt>Base URL</dt><dd>${escapeHtml(options.backendBaseUrl || 'Not configured')}</dd>
-        <dt>Health</dt><dd>${options.health ? 'Online' : 'Unavailable'}</dd>
-        <dt>Runtime</dt><dd>${escapeHtml(options.health?.runtime || 'Unknown')}</dd>
+        <dt>地址</dt><dd>${escapeHtml(options.backendBaseUrl || '未配置')}</dd>
+        <dt>健康状态</dt><dd>${options.health ? '在线' : '不可用'}</dd>
+        <dt>运行时</dt><dd>${escapeHtml(options.health?.runtime || '未知')}</dd>
       </dl>
     </div>
     <div class="panel">
-      <h2>Config</h2>
+      <h2>配置</h2>
       <dl class="details compact">
-        <dt>Source</dt><dd>${escapeHtml(options.config?.source || 'Unknown')}</dd>
-        <dt>KV key</dt><dd>${escapeHtml(options.config?.key || 'Unknown')}</dd>
-        <dt>Model</dt><dd>${escapeHtml(options.config?.effective_config.openai_model || 'Unknown')}</dd>
-        <dt>Threshold</dt><dd>${escapeHtml(options.config?.effective_config.relevance_threshold || 'Unknown')}</dd>
+        <dt>来源</dt><dd>${escapeHtml(sourceText(options.config?.source))}</dd>
+        <dt>KV Key</dt><dd>${escapeHtml(options.config?.key || '未知')}</dd>
+        <dt>模型</dt><dd>${escapeHtml(options.config?.effective_config.openai_model || '未知')}</dd>
+        <dt>阈值</dt><dd>${escapeHtml(scoreText(options.config?.effective_config.relevance_threshold))}</dd>
       </dl>
     </div>
   </section>`;
 
   return pageShell({
-    title: 'PaperSniffer Status',
+    title: 'PaperSniffer 状态',
     current: 'status',
     body,
-    authEnabled: options.authEnabled,
   });
 }
 
-export function renderLoginPage(flash?: Flash): string {
-  return `<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Sign in - PaperSniffer</title>
-  <style>${APP_CSS}</style>
-</head>
-<body>
-  <main class="login">
-    <section class="panel narrow">
-      <p class="eyebrow">PaperSniffer</p>
-      <h1>Sign in</h1>
-      ${renderFlash(flash)}
-      <form class="form-grid" method="post" action="/login">
-        <label class="wide">
-          <span>Password</span>
-          <input type="password" name="password" autocomplete="current-password" autofocus required>
-        </label>
-        <div class="actions wide">
-          <button type="submit">Continue</button>
-        </div>
-      </form>
-    </section>
-  </main>
-</body>
-</html>`;
-}
-
-export function renderErrorPage(title: string, message: string, authEnabled?: boolean): string {
+export function renderErrorPage(title: string, message: string): string {
   const body = `<header class="page-header">
     <div>
-      <p class="eyebrow">Error</p>
+      <p class="eyebrow">错误</p>
       <h1>${escapeHtml(title)}</h1>
     </div>
   </header>
@@ -512,9 +541,120 @@ export function renderErrorPage(title: string, message: string, authEnabled?: bo
     title,
     current: 'status',
     body,
-    authEnabled,
   });
 }
+
+const APP_JS = `
+(() => {
+  function bindRepeatList(root) {
+    const rows = root.querySelector('[data-list-rows]');
+    const inputName = root.getAttribute('data-input-name') || 'item';
+    const placeholder = root.getAttribute('data-placeholder') || '';
+
+    root.addEventListener('click', event => {
+      const target = event.target;
+      if (!(target instanceof HTMLElement)) {
+        return;
+      }
+
+      if (target.matches('[data-add-row]')) {
+        const row = document.createElement('div');
+        row.className = 'list-row';
+        row.innerHTML = '<input name="' + inputName + '" placeholder="' + placeholder + '"><button class="button secondary danger mini" type="button" data-remove-row>删除</button>';
+        rows.appendChild(row);
+      }
+
+      if (target.matches('[data-remove-row]')) {
+        const allRows = rows.querySelectorAll('.list-row');
+        const row = target.closest('.list-row');
+        if (row && allRows.length > 1) {
+          row.remove();
+        } else if (row) {
+          const input = row.querySelector('input');
+          if (input) {
+            input.value = '';
+          }
+        }
+      }
+    });
+  }
+
+  function domainRuleTemplate() {
+    return '<article class="rule-card" data-domain-rule>' +
+      '<label><span>arXiv 分类</span><input name="domain_category" placeholder="例如：cs.CL"></label>' +
+      '<label><span>匹配方式</span><select name="domain_mode" data-domain-mode>' +
+      '<option value="accept_all">接收该分类下全部论文</option>' +
+      '<option value="categories_filter">只接收同时属于指定交叉分类的论文</option>' +
+      '</select></label>' +
+      '<label class="filter-field is-hidden" data-filter-field><span>交叉分类</span><input name="domain_filter_categories" placeholder="例如：cs.AI, cs.LG"></label>' +
+      '<button class="button secondary danger mini rule-delete" type="button" data-remove-domain-rule>删除规则</button>' +
+      '</article>';
+  }
+
+  function syncDomainRule(rule) {
+    const mode = rule.querySelector('[data-domain-mode]');
+    const field = rule.querySelector('[data-filter-field]');
+    if (!mode || !field) {
+      return;
+    }
+
+    field.classList.toggle('is-hidden', mode.value !== 'categories_filter');
+    if (mode.value !== 'categories_filter') {
+      const input = field.querySelector('input');
+      if (input) {
+        input.value = '';
+      }
+    }
+  }
+
+  function bindDomainRules(root) {
+    const list = root.querySelector('[data-domain-rule-list]');
+
+    root.querySelectorAll('[data-domain-rule]').forEach(syncDomainRule);
+
+    root.addEventListener('change', event => {
+      const target = event.target;
+      if (target instanceof HTMLElement && target.matches('[data-domain-mode]')) {
+        const rule = target.closest('[data-domain-rule]');
+        if (rule) {
+          syncDomainRule(rule);
+        }
+      }
+    });
+
+    root.addEventListener('click', event => {
+      const target = event.target;
+      if (!(target instanceof HTMLElement)) {
+        return;
+      }
+
+      if (target.matches('[data-add-domain-rule]')) {
+        list.insertAdjacentHTML('beforeend', domainRuleTemplate());
+      }
+
+      if (target.matches('[data-remove-domain-rule]')) {
+        const rules = list.querySelectorAll('[data-domain-rule]');
+        const rule = target.closest('[data-domain-rule]');
+        if (rule && rules.length > 1) {
+          rule.remove();
+        } else if (rule) {
+          rule.querySelectorAll('input').forEach(input => {
+            input.value = '';
+          });
+          const mode = rule.querySelector('[data-domain-mode]');
+          if (mode) {
+            mode.value = 'accept_all';
+          }
+          syncDomainRule(rule);
+        }
+      }
+    });
+  }
+
+  document.querySelectorAll('[data-repeat-list]').forEach(bindRepeatList);
+  document.querySelectorAll('[data-domain-rules]').forEach(bindDomainRules);
+})();
+`;
 
 const APP_CSS = `
 :root {
@@ -575,7 +715,7 @@ a { color: inherit; }
 .brand strong, .brand small { display: block; }
 .brand small { color: var(--muted); margin-top: 2px; }
 .nav { display: grid; gap: 6px; }
-.nav a, .logout button {
+.nav a {
   display: block;
   width: 100%;
   border: 0;
@@ -588,14 +728,9 @@ a { color: inherit; }
   text-align: left;
   text-decoration: none;
 }
-.nav a.active, .nav a:hover, .logout button:hover {
+.nav a.active, .nav a:hover {
   background: var(--surface-2);
   color: var(--text);
-}
-.logout {
-  border-top: 1px solid var(--line);
-  margin-top: 24px;
-  padding-top: 14px;
 }
 .main {
   width: min(1440px, 100%);
@@ -796,6 +931,56 @@ button, .button {
 .form-grid .wide, .actions.wide {
   grid-column: 1 / -1;
 }
+.field-group {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fbfcfb;
+  padding: 14px;
+}
+.subhead {
+  align-items: center;
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+.subhead h2 {
+  margin-bottom: 4px;
+}
+.subhead p {
+  color: var(--muted);
+  font-size: 13px;
+  margin: 0;
+}
+.list-rows, .rule-list {
+  display: grid;
+  gap: 10px;
+}
+.list-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+}
+.rule-card {
+  align-items: end;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  display: grid;
+  grid-template-columns: minmax(140px, 1fr) minmax(220px, 1.4fr) minmax(180px, 1fr) auto;
+  gap: 10px;
+  padding: 12px;
+}
+.filter-field.is-hidden {
+  visibility: hidden;
+}
+.mini {
+  min-height: 36px;
+  padding: 7px 10px;
+}
+.danger {
+  color: var(--danger) !important;
+}
 .actions {
   display: flex;
   gap: 10px;
@@ -804,7 +989,7 @@ button, .button {
 .panel, .empty {
   padding: 18px;
 }
-.panel.narrow, .login .panel {
+.panel.narrow {
   max-width: 640px;
 }
 .meta-bar {
@@ -851,15 +1036,15 @@ button, .button {
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 16px;
 }
-.login {
-  display: grid;
-  min-height: 100vh;
-  place-items: center;
-  padding: 24px;
-}
 @media (max-width: 1120px) {
   .toolbar {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .rule-card {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .rule-delete {
+    grid-column: 1 / -1;
   }
   .stats {
     grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -892,6 +1077,12 @@ button, .button {
   }
   .toolbar, .form-grid, .status-grid, .stats {
     grid-template-columns: 1fr;
+  }
+  .list-row, .rule-card {
+    grid-template-columns: 1fr;
+  }
+  .filter-field.is-hidden {
+    display: none;
   }
   .actions {
     justify-content: stretch;

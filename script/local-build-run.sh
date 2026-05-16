@@ -15,8 +15,6 @@
 # Optional:
 #   BACKEND_PORT=8787
 #   FRONTEND_PORT=8788
-#   FRONTEND_PASSWORD=...
-#   SESSION_SECRET=...
 #   KEEP_ALIVE=false          # stop after smoke checks
 #   RUN_FULL_API_TESTS=true   # also run backend/script/test.sh and frontend/script/test.sh
 
@@ -40,7 +38,6 @@ BACKEND_PID=""
 FRONTEND_PID=""
 WORKER_PID=""
 LOG_DIR="$(mktemp -d)"
-COOKIE_JAR="$(mktemp)"
 
 usage() {
   cat >&2 <<'EOF'
@@ -50,8 +47,6 @@ Usage:
 Environment knobs:
   BACKEND_PORT=8787
   FRONTEND_PORT=8788
-  FRONTEND_PASSWORD=<optional UI password>
-  SESSION_SECRET=<optional cookie signing secret>
   KEEP_ALIVE=true|false
   RUN_FULL_API_TESTS=true|false
 EOF
@@ -141,14 +136,6 @@ write_dev_vars() {
   write_var_line BACKEND_ADMIN_TOKEN "$ADMIN_TOKEN" "$FRONTEND_VARS"
   write_var_line APP_TITLE "$APP_TITLE" "$FRONTEND_VARS"
 
-  if [[ -n "${FRONTEND_PASSWORD:-}" ]]; then
-    write_var_line FRONTEND_PASSWORD "$FRONTEND_PASSWORD" "$FRONTEND_VARS"
-  fi
-
-  if [[ -n "${SESSION_SECRET:-}" ]]; then
-    write_var_line SESSION_SECRET "$SESSION_SECRET" "$FRONTEND_VARS"
-  fi
-
   echo "==> Wrote backend env: $BACKEND_VARS"
   echo "==> Wrote frontend env: $FRONTEND_VARS"
 }
@@ -164,7 +151,7 @@ cleanup() {
     kill "$BACKEND_PID" >/dev/null 2>&1 || true
   fi
 
-  rm -rf "$LOG_DIR" "$COOKIE_JAR"
+  rm -rf "$LOG_DIR"
   exit "$exit_code"
 }
 
@@ -229,12 +216,6 @@ wait_for_backend() {
 wait_for_frontend() {
   echo "==> Waiting for frontend at $FRONTEND_BASE_URL"
 
-  local path="/status"
-  local expected="200"
-  if [[ -n "${FRONTEND_PASSWORD:-}" ]]; then
-    path="/login"
-  fi
-
   for _ in $(seq 1 90); do
     local status
     status="$(
@@ -243,11 +224,11 @@ wait_for_frontend() {
         --max-time 5 \
         --output /dev/null \
         --write-out "%{http_code}" \
-        "$FRONTEND_BASE_URL$path" \
+        "$FRONTEND_BASE_URL/status" \
         2>/dev/null || true
     )"
 
-    if [[ "$status" == "$expected" ]]; then
+    if [[ "$status" == "200" ]]; then
       echo "==> Frontend is ready"
       return
     fi
@@ -295,20 +276,6 @@ assert_http() {
   echo "PASS $name -> $status"
 }
 
-login_frontend_if_needed() {
-  if [[ -z "${FRONTEND_PASSWORD:-}" ]]; then
-    return
-  fi
-
-  assert_http \
-    "frontend login" \
-    "303" \
-    --request POST \
-    --cookie-jar "$COOKIE_JAR" \
-    --data-urlencode "password=$FRONTEND_PASSWORD" \
-    "$FRONTEND_BASE_URL/login"
-}
-
 run_light_smoke_tests() {
   echo "==> Running lightweight smoke checks"
 
@@ -324,16 +291,9 @@ run_light_smoke_tests() {
     --header "Authorization: Bearer $ADMIN_TOKEN" \
     "$BACKEND_BASE_URL/api/config"
 
-  login_frontend_if_needed
-
-  local cookie_args=()
-  if [[ -n "${FRONTEND_PASSWORD:-}" ]]; then
-    cookie_args=(--cookie "$COOKIE_JAR")
-  fi
-
-  assert_http "frontend status page" "200" "${cookie_args[@]}" "$FRONTEND_BASE_URL/status"
-  assert_http "frontend dashboard page" "200" "${cookie_args[@]}" "$FRONTEND_BASE_URL/"
-  assert_http "frontend API proxy health" "200" "${cookie_args[@]}" "$FRONTEND_BASE_URL/api/health"
+  assert_http "frontend status page" "200" "$FRONTEND_BASE_URL/status"
+  assert_http "frontend dashboard page" "200" "$FRONTEND_BASE_URL/"
+  assert_http "frontend API proxy health" "200" "$FRONTEND_BASE_URL/api/health"
 }
 
 run_full_api_tests_if_requested() {
