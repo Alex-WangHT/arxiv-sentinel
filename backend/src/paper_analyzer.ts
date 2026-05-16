@@ -10,6 +10,7 @@ import { LlmClient } from './llm_client';
  */
 
 const VALID_SCORES = ['HIGH', 'MEDIUM', 'LOW', 'IRRELEVANT'] as const;
+type AnalyzeProgressCallback = (completed: number, total: number) => void | Promise<void>;
 // 默认系统提示词。
 // 现在 prompt 推荐放在 CONFIG_KV 的配置里（prompt_system / prompt_user_template）统一管理；
 // 如果没有配置，则回退到这里的默认 prompt。
@@ -77,6 +78,7 @@ export class PaperAnalyzer {
     papers: Paper[],
     requestInterval: number = 0.5,
     queueInterval: number = 20.0,
+    onProgress?: AnalyzeProgressCallback,
   ): Promise<AnalysisResult[]> {
     console.info(
       `开始异步分析 ${papers.length} 篇论文，请求间隔: ${requestInterval} 秒，队列间隔: ${queueInterval} 秒`,
@@ -90,6 +92,7 @@ export class PaperAnalyzer {
       true,
       requestInterval,
       queueInterval,
+      onProgress,
     );
 
     const results = papers.map((paper, index) =>
