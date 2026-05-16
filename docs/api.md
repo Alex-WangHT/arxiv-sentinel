@@ -2,7 +2,7 @@
 
 本文档描述 Cloudflare Worker 入口（`backend/src/worker.ts`）对外提供的 **HTTP 接口**。响应体均为 **JSON**（`Content-Type: application/json; charset=utf-8`），并带有 **CORS** 头（`Access-Control-Allow-Origin: *` 等），便于浏览器或本地脚本调用。
 
-**本地开发**：先把 `OPENAI_API_KEY`、`ADMIN_TOKEN` 等变量传入 shell 环境，再运行 `bash script/deploy.sh local` / `npm run deploy:local`；脚本会从这些变量生成 `script/config/.dev.vars` 并同步到 `backend/.dev.vars`。默认基址为 `http://127.0.0.1:8787`（以终端输出为准）。
+**本地开发**：先把 `OPENAI_API_KEY`、`ADMIN_TOKEN` 等变量传入 shell 环境，再运行 `bash backend/script/deploy.sh local` / `npm run deploy:local`；脚本会从这些变量生成 `backend/script/config/.dev.vars`。默认基址为 `http://127.0.0.1:8787`（以终端输出为准）。
 
 **线上**：部署后的 `*.workers.dev` 或自定义域名，路径与本地一致。
 
@@ -16,7 +16,7 @@
 Authorization: Bearer <ADMIN_TOKEN>
 ```
 
-本地必须通过 shell 环境变量传入；`bash script/deploy.sh local` 会据此生成 `.dev.vars` 供 wrangler 读取。
+本地必须通过 shell 环境变量传入；`bash backend/script/deploy.sh local` 会据此生成 `.dev.vars` 供 wrangler 读取。
 
 ```text
 ADMIN_TOKEN=local-dev-token
@@ -28,7 +28,7 @@ ADMIN_TOKEN=local-dev-token
 npx.cmd wrangler secret put ADMIN_TOKEN --config backend/wrangler.toml
 ```
 
-或先设置 shell 环境变量，再使用 `npm run deploy:cloud`（内部为 `bash script/deploy.sh cloud`，会生成 `.dev.vars` 并上传 secrets）。
+或先设置 shell 环境变量，再使用 `npm run deploy:cloud`（内部为 `bash backend/script/deploy.sh cloud`，会生成 `.dev.vars` 并上传 secrets）。
 
 ---
 
@@ -44,7 +44,7 @@ npx.cmd wrangler secret put ADMIN_TOKEN --config backend/wrangler.toml
 
 项目不再通过仓库外层的 `config.json` 文件配置。配置来源收敛为：
 
-- 本地开发：`script/config/.dev.vars`（由 `script/deploy.sh` 从 shell 环境变量生成，并同步到 `backend/.dev.vars`）
+- 本地开发：`backend/script/config/.dev.vars`（由 `backend/script/deploy.sh` 从 shell 环境变量生成）
 - 线上密钥：Cloudflare Secrets
 - 前端动态配置：`CONFIG_KV`，通过 `GET` / `PUT /api/config` 读写
 
@@ -435,4 +435,4 @@ async function saveConfig(token: string, config: unknown) {
 
 - Worker 绑定、路由与本地调试：[WORKERS_ADAPTATION_NOTES.md](./WORKERS_ADAPTATION_NOTES.md)
 - 部署与线上 Secret、示例命令：[deploy-cloudflare.md](./deploy-cloudflare.md)
-- 本地/云端部署与自动化测试：`script/deploy.sh`、`script/test.sh`；密钥与 `script/config/.dev.vars`（模板见 `script/config/.dev.vars.example`）变量名一致。
+- 本地/云端部署与自动化测试：`backend/script/deploy.sh`、`backend/script/test.sh`；密钥变量由脚本写入 `backend/script/config/.dev.vars`。

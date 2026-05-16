@@ -2,28 +2,35 @@
 # API smoke tests for local or Cloudflare Worker deployments.
 #
 # Usage:
-#   bash script/test.sh local
-#   bash script/test.sh cloud https://paper-sniffer-backend.<your-subdomain>.workers.dev
+#   bash backend/script/test.sh local
+#   bash backend/script/test.sh cloud https://paper-sniffer-backend.<your-subdomain>.workers.dev
 #
 # You can also set BASE_URL/PAPER_SNIFFER_BASE_URL for cloud tests.
-# ADMIN_TOKEN is read from the environment or script/config/.dev.vars.
+# ADMIN_TOKEN is read from the environment or backend/script/config/.dev.vars.
 
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-SRC_VARS="$ROOT/script/config/.dev.vars"
-DEST_VARS="$ROOT/backend/.dev.vars"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+SRC_VARS="$ROOT/backend/script/config/.dev.vars"
 
 usage() {
   local exit_code="${1:-1}"
   cat >&2 <<'EOF'
 Usage:
-  bash script/test.sh [local|cloud] [base_url]
+  bash backend/script/test.sh [local|cloud] [base_url]
 
 Examples:
-  bash script/test.sh local
-  bash script/test.sh cloud https://paper-sniffer-backend.<your-subdomain>.workers.dev
-  BASE_URL=https://paper-sniffer-backend.<your-subdomain>.workers.dev bash script/test.sh cloud
+  bash backend/script/test.sh local
+  bash backend/script/test.sh cloud https://paper-sniffer-backend.<your-subdomain>.workers.dev
+  BASE_URL=https://paper-sniffer-backend.<your-subdomain>.workers.dev bash backend/script/test.sh cloud
+
+Environment knobs:
+  CONNECT_TIMEOUT=30
+  CURL_MAX_TIME=30
+  RUN_TRIGGER_MAX_TIME=30
+  POLL_INTERVAL=10
+  POLL_TIMEOUT=900
+  SHOW_RESPONSE=true
 EOF
   exit "$exit_code"
 }
@@ -41,11 +48,6 @@ if [[ -f "$SRC_VARS" ]]; then
   set -a
   source "$SRC_VARS"
   set +a
-
-  if [[ "$MODE" == "local" ]]; then
-    cp "$SRC_VARS" "$DEST_VARS"
-    echo "==> Synced script/config/.dev.vars to backend/.dev.vars"
-  fi
 elif [[ -z "${ADMIN_TOKEN:-}" ]]; then
   echo "Error: missing ADMIN_TOKEN. Create $SRC_VARS or export ADMIN_TOKEN." >&2
   exit 1
@@ -71,8 +73,11 @@ esac
 
 BASE_URL="${BASE_URL%/}"
 TEST_DATE="${TEST_DATE:-2026-05-12}"
+CONNECT_TIMEOUT="${CONNECT_TIMEOUT:-30}"
 CURL_MAX_TIME="${CURL_MAX_TIME:-30}"
-RUN_MAX_TIME="${RUN_MAX_TIME:-900}"
+RUN_TRIGGER_MAX_TIME="${RUN_TRIGGER_MAX_TIME:-30}"
+POLL_INTERVAL="${POLL_INTERVAL:-10}"
+POLL_TIMEOUT="${POLL_TIMEOUT:-900}"
 SHOW_RESPONSE="${SHOW_RESPONSE:-true}"
 AUTH_HEADER="Authorization: Bearer $ADMIN_TOKEN"
 
@@ -104,6 +109,20 @@ print_response() {
   fi
 }
 
+fail_with_response() {
+  local message="$1"
+  local body_file="$2"
+
+  echo "FAIL $message" >&2
+  echo "Response body:" >&2
+  if [[ -s "$body_file" ]]; then
+    sed 's/^/  /' "$body_file" >&2
+  else
+    echo "  <empty>" >&2
+  fi
+  exit 1
+}
+
 request() {
   local method="$1"
   local path="$2"
@@ -113,11 +132,13 @@ request() {
   local auth="${6:-yes}"
   local max_time="${7:-$CURL_MAX_TIME}"
   local body_file="$TMP_DIR/response_${PASS_COUNT}.json"
+  local error_file="$TMP_DIR/curl_error_${PASS_COUNT}.txt"
   local status
+  local curl_exit
   local args=(
     --silent
     --show-error
-    --connect-timeout 10
+    --connect-timeout "$CONNECT_TIMEOUT"
     --max-time "$max_time"
     --request "$method"
     --output "$body_file"
@@ -132,9 +153,33 @@ request() {
     args+=(--header "Content-Type: application/json" --data "$body")
   fi
 
-  status="$(curl "${args[@]}" "$BASE_URL$path")"
+  set +e
+  status="$(curl "${args[@]}" "$BASE_URL$path" 2>"$error_file")"
+  curl_exit=$?
+  set -e
+
+  if (( curl_exit != 0 )); then
+    echo "FAIL $name: curl failed with exit code $curl_exit" >&2
+    echo "URL: $BASE_URL$path" >&2
+    echo "Timeouts: connect=${CONNECT_TIMEOUT}s, total=${max_time}s" >&2
+    echo "Curl error:" >&2
+    if [[ -s "$error_file" ]]; then
+      sed 's/^/  /' "$error_file" >&2
+    else
+      echo "  <empty>" >&2
+    fi
+    echo "Response body:" >&2
+    if [[ -s "$body_file" ]]; then
+      sed 's/^/  /' "$body_file" >&2
+    else
+      echo "  <empty>" >&2
+    fi
+    exit 1
+  fi
+
   if [[ "$status" != "$expected_status" ]]; then
     echo "FAIL $name: expected HTTP $expected_status, got $status" >&2
+    echo "URL: $BASE_URL$path" >&2
     echo "Response body:" >&2
     sed 's/^/  /' "$body_file" >&2
     exit 1
@@ -155,6 +200,27 @@ assert_body_contains() {
     sed 's/^/  /' "$RESPONSE_FILE" >&2
     exit 1
   fi
+}
+
+wait_for_analysis_results() {
+  local deadline=$((SECONDS + POLL_TIMEOUT))
+  local attempt=1
+
+  while (( SECONDS <= deadline )); do
+    request GET "/api/analysis-results?target_date=$TEST_DATE" 200 "analysis results poll #$attempt"
+    assert_body_contains '"results": [' "analysis results body on poll #$attempt"
+
+    if ! grep -Fq '"results": []' "$RESPONSE_FILE"; then
+      echo "==> Analysis results are available after poll #$attempt"
+      return
+    fi
+
+    echo "==> No analysis results yet for $TEST_DATE; waiting ${POLL_INTERVAL}s before next poll"
+    attempt=$((attempt + 1))
+    sleep "$POLL_INTERVAL"
+  done
+
+  fail_with_response "analysis results did not appear within ${POLL_TIMEOUT}s" "$RESPONSE_FILE"
 }
 
 VALID_CONFIG_BODY='{
@@ -178,6 +244,7 @@ VALID_CONFIG_BODY='{
 }'
 
 echo "==> Running $MODE API tests against $BASE_URL"
+echo "==> Timeouts: connect=${CONNECT_TIMEOUT}s, default=${CURL_MAX_TIME}s, run_trigger=${RUN_TRIGGER_MAX_TIME}s, poll_timeout=${POLL_TIMEOUT}s"
 
 request OPTIONS /health 200 "CORS preflight" "" no
 assert_body_contains '"ok": true' "CORS preflight body"
@@ -196,11 +263,11 @@ assert_body_contains '"ok": true' "config API read body"
 request POST /api/config/validate 200 "config validation" "$VALID_CONFIG_BODY"
 assert_body_contains '"ok": true' "config validation body"
 
-request POST "/run?sync=true&date=$TEST_DATE" 200 "pipeline run before analysis query" "" yes "$RUN_MAX_TIME"
-assert_body_contains '"ok": true' "pipeline run body"
+request POST "/run?date=$TEST_DATE" 202 "pipeline run trigger" "" yes "$RUN_TRIGGER_MAX_TIME"
+assert_body_contains '"ok": true' "pipeline run trigger body"
+assert_body_contains '"queued": true' "pipeline run trigger queued body"
 
-request GET "/api/analysis-results?target_date=$TEST_DATE" 200 "analysis results query"
-assert_body_contains '"results": [' "analysis results body"
+wait_for_analysis_results
 
 request GET /api/analysis-results 400 "analysis results require target_date"
 assert_body_contains 'target_date' "analysis results validation body"

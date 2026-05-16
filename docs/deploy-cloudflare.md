@@ -19,7 +19,7 @@ HTTP 接口的完整说明见 [api.md](./api.md)。
 
 ## 1. 一键云端部署
 
-`script/deploy.sh cloud` 已经包含本文档原来的 Cloudflare 部署流程。它不读取现成 `.dev.vars`，必须从 shell 环境变量生成。
+`backend/script/deploy.sh cloud` 已经包含本文档原来的 Cloudflare 部署流程。它不读取现成 `.dev.vars`，必须从 shell 环境变量生成。
 
 PowerShell：
 
@@ -32,7 +32,7 @@ npm.cmd run deploy:cloud
 Git Bash：
 
 ```bash
-OPENAI_API_KEY=sk-your-real-key ADMIN_TOKEN=your-admin-token bash script/deploy.sh cloud
+OPENAI_API_KEY=sk-your-real-key ADMIN_TOKEN=your-admin-token bash backend/script/deploy.sh cloud
 ```
 
 ## 2. Cloud 分支会执行什么
@@ -40,7 +40,7 @@ OPENAI_API_KEY=sk-your-real-key ADMIN_TOKEN=your-admin-token bash script/deploy.
 `deploy.sh cloud` 会按顺序执行：
 
 1. 校验 `OPENAI_API_KEY`、`ADMIN_TOKEN` 必须来自 shell 环境变量。
-2. 生成 `script/config/.dev.vars`，并同步到 `backend/.dev.vars`。
+2. 生成 `backend/script/config/.dev.vars`。
 3. 运行 `npm run typecheck` 和 `npm run build`。
 4. 检查 Cloudflare 登录状态；未登录时启动 `wrangler login`。
 5. 确认 KV namespace `CONFIG_KV`；如果 `wrangler.toml` 里没有有效 `id`，创建并自动更新配置。
@@ -87,7 +87,7 @@ crons = ["0 1 * * *"]
 
 ## 4. 部署后验证
 
-部署脚本会自动运行 `script/test.sh cloud`。它测试健康检查、鉴权、配置读取/校验、分析结果查询等轻量接口，不会触发 `/run`，也不会发起真实论文分析。
+部署脚本会自动运行 `backend/script/test.sh cloud`。它测试健康检查、鉴权、配置读取/校验、分析结果查询等轻量接口，不会触发 `/run`，也不会发起真实论文分析。
 
 查看线上日志：
 

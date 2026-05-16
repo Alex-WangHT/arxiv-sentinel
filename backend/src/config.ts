@@ -8,7 +8,7 @@ import { DomainRule } from './models';
  *
  * env 可以来自：
  * 1. wrangler.toml 里的 [vars]
- * 2. 本地调试用的 backend/.dev.vars（由 script/deploy.sh 根据 shell 环境变量生成）
+ * 2. 本地调试用的 backend/script/config/.dev.vars（由 backend/script/deploy.sh 根据 shell 环境变量生成）
  * 3. Cloudflare Dashboard / wrangler secret put 设置的密钥
  */
 
