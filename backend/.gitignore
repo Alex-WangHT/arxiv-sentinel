@@ -1,0 +1,9 @@
+# Kept for developers working directly inside backend/
+node_modules/
+dist/
+.wrangler/
+.dev.vars
+output/
+logs/
+*.log
+*.tsbuildinfo

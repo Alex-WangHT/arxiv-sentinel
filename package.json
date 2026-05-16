@@ -1,0 +1,26 @@
+{
+  "name": "paper-sniffer-backend",
+  "version": "1.0.0",
+  "description": "Cloudflare Workers and Queues backend for tracking arXiv papers",
+  "type": "module",
+  "main": "backend/dist/index.js",
+  "types": "backend/dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -p backend/tsconfig.json",
+    "typecheck": "tsc --noEmit -p backend/tsconfig.json",
+    "dev": "wrangler dev --config backend/wrangler.toml --local --env-file backend/script/config/.dev.vars",
+    "dev:scheduled": "wrangler dev --config backend/wrangler.toml --local --test-scheduled --env-file backend/script/config/.dev.vars",
+    "deploy": "wrangler deploy --config backend/wrangler.toml",
+    "deploy:local": "bash backend/script/deploy.sh local",
+    "deploy:cloud": "bash backend/script/deploy.sh cloud",
+    "test:all": "bash backend/script/test.sh local",
+    "test:local": "bash backend/script/test.sh local",
+    "test:cloud": "bash backend/script/test.sh cloud",
+    "tail": "wrangler tail --config backend/wrangler.toml"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "typescript": "^5.0.0",
+    "wrangler": "^4.0.0"
+  }
+}
