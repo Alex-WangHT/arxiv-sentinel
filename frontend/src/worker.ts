@@ -320,7 +320,7 @@ function refreshStateFromRun(
 async function handleDashboard(
   request: Request,
   env: Env,
-  ctx?: ExecutionContext,
+  _ctx?: ExecutionContext,
   options: {
     dateOverride?: string;
     runResponse?: RunResponse;
@@ -351,39 +351,43 @@ async function handleDashboard(
       ? (await client.runStatus(filters.date).catch(() => undefined))?.run || undefined
       : undefined;
     const isActiveRun = latestRun && (latestRun.status === 'queued' || latestRun.status === 'running');
-    const hideResults = refresh.ensure || refresh.running;
-    const displayResults = hideResults ? [] : results;
-    const displayTotalCount = hideResults ? 0 : allResults.length;
-    const displayFocusTotal = hideResults ? 0 : focusTotal;
-    const displaySelected = hideResults ? undefined : selected;
-    const displayKeywordFacets = hideResults ? [] : keywordFacets;
 
     const shouldStartRun = refresh.ensure && !refresh.running && !isActiveRun;
     if (shouldStartRun) {
-      const runTask = client.run({ date: filters.date, sync: false })
-        .catch(error => {
-          console.error(`刷新触发流水线失败: ${errorMessage(error)}`);
-        });
-
-      if (ctx) {
-        ctx.waitUntil(runTask);
-      } else {
-        void runTask;
-      }
-
       const nextAttempt = refresh.attempt + 1;
-      refreshState = {
-        kind: 'queued',
-        date: filters.date,
-        attempt: nextAttempt,
-        progress: 0,
-        currentStep: '排队',
-        nextUrl: dashboardPath(filters, { running: '1', attempt: nextAttempt }),
-        message: allResults.length > 0
-          ? `${filters.date} 已从数据库加载旧结果，正在后台重新查询 arXiv。`
-          : `${filters.date} 暂无入库论文，已启动抓取和分析流水线。`,
-      };
-      status = 202;
+      try {
+        const runResponse = await client.run({ date: filters.date, sync: false });
+        refreshState = runResponse.run
+          ? refreshStateFromRun(filters, runResponse.run, nextAttempt, allResults.length)
+          : {
+            kind: 'queued',
+            date: filters.date,
+            attempt: nextAttempt,
+            progress: 0,
+            currentStep: '排队',
+            nextUrl: dashboardPath(filters, { running: '1', attempt: nextAttempt }),
+            message: allResults.length > 0
+              ? `${filters.date} 已从数据库加载旧结果，正在后台重新查询 arXiv。`
+              : `${filters.date} 暂无入库论文，已启动抓取和分析流水线。`,
+          };
+        if (allResults.length > 0) {
+          refreshState.message = `${filters.date} 已从数据库加载旧结果，正在后台重新查询 arXiv。`;
+        }
+        status = 202;
+      } catch (error) {
+        const message = errorMessage(error);
+        flash = {
+          kind: 'error',
+          message: `重新搜索启动失败：${message}`,
+        };
+        refreshState = {
+          kind: 'error',
+          date: filters.date,
+          attempt: nextAttempt,
+          message,
+        };
+        status = 502;
+      }
     } else if ((refresh.ensure || refresh.running) && allResults.length === 0) {
       if (latestRun) {
         refreshState = refreshStateFromRun(filters, latestRun, refresh.attempt, allResults.length);
@@ -420,11 +424,11 @@ async function handleDashboard(
 
     return htmlResponse(renderDashboardPage({
       filters,
-      results: displayResults,
-      totalCount: displayTotalCount,
-      focusTotal: displayFocusTotal,
-      selected: displaySelected,
-      keywordFacets: displayKeywordFacets,
+      results,
+      totalCount: allResults.length,
+      focusTotal,
+      selected,
+      keywordFacets,
       runResponse: options.runResponse,
       refreshState,
       flash,
@@ -458,19 +462,6 @@ async function handleDashboard(
 function optionalString(form: FormData, name: string): string | undefined {
   const value = String(form.get(name) || '').trim();
   return value || undefined;
-}
-
-function optionalNumber(form: FormData, name: string): number | undefined {
-  const raw = String(form.get(name) || '').trim();
-  if (!raw) {
-    return undefined;
-  }
-
-  const value = Number(raw);
-  if (!Number.isFinite(value)) {
-    throw new Error(`${name} 必须是数字`);
-  }
-  return value;
 }
 
 function formStrings(form: FormData, name: string): string[] {
@@ -516,7 +507,6 @@ async function parseConfigForm(request: Request): Promise<EditableConfig> {
   const domainModes = form.getAll('domain_mode').map(value => String(value).trim());
   const domainFilters = form.getAll('domain_filter_categories').map(value => String(value).trim());
   const threshold = String(form.get('relevance_threshold') || 'MEDIUM').toUpperCase() as Score;
-  const logLevel = optionalString(form, 'log_level') as EditableConfig['log_level'];
 
   if (!SCORE_VALUES.includes(threshold)) {
     throw new Error('相关性阈值无效');
@@ -538,9 +528,6 @@ async function parseConfigForm(request: Request): Promise<EditableConfig> {
     relevance_threshold: threshold,
     openai_model: String(form.get('openai_model') || '').trim(),
     openai_base_url: optionalString(form, 'openai_base_url'),
-    max_results_per_category: optionalNumber(form, 'max_results_per_category'),
-    max_concurrent_requests: optionalNumber(form, 'max_concurrent_requests'),
-    log_level: logLevel,
     prompt_system: optionalString(form, 'prompt_system'),
     prompt_user_template: optionalString(form, 'prompt_user_template'),
   };

@@ -1,4 +1,5 @@
 import { Config, WorkerConfigEnv } from './config';
+import { installStructuredConsoleLogger } from './logger';
 import {
   Pipeline,
   PipelineLogLevel,
@@ -11,6 +12,8 @@ import {
   type AnalysisResultsQuery,
 } from './pipeline';
 import type { Paper } from './models';
+
+installStructuredConsoleLogger();
 
 const BEIJING_TIME_OFFSET_MS = 8 * 60 * 60 * 1000;
 const SNIFF_PROGRESS_PERCENT = 10;
@@ -49,7 +52,6 @@ const DEFAULT_CONFIG: Record<string, unknown> = {
   relevance_threshold: 'MEDIUM',
   openai_model: 'deepseek-v4-flash',
   openai_base_url: 'https://api.deepseek.com/v1',
-  max_results_per_category: 5,
   max_concurrent_requests: 3,
   output_dir: 'output',
   prompts_dir: 'prompts',
@@ -803,9 +805,6 @@ function envConfigObject(env: Env): Record<string, unknown> {
   if (env.OPENAI_BASE_URL !== undefined) {
     config.openai_base_url = env.OPENAI_BASE_URL;
   }
-  if (env.MAX_RESULTS_PER_CATEGORY !== undefined) {
-    config.max_results_per_category = env.MAX_RESULTS_PER_CATEGORY;
-  }
   if (env.MAX_CONCURRENT_REQUESTS !== undefined) {
     config.max_concurrent_requests = env.MAX_CONCURRENT_REQUESTS;
   }
@@ -831,10 +830,41 @@ function envConfigObject(env: Env): Record<string, unknown> {
   return config;
 }
 
+function workerRuntimeConfig(env: Env): Record<string, unknown> {
+  const config: Record<string, unknown> = {
+    max_concurrent_requests: DEFAULT_CONFIG.max_concurrent_requests,
+    log_level: DEFAULT_CONFIG.log_level,
+  };
+
+  if (env.MAX_CONCURRENT_REQUESTS !== undefined) {
+    config.max_concurrent_requests = env.MAX_CONCURRENT_REQUESTS;
+  }
+  if (env.LOG_LEVEL !== undefined) {
+    config.log_level = env.LOG_LEVEL;
+  }
+
+  return config;
+}
+
 function publicConfig(config: Record<string, unknown>): Record<string, unknown> {
-  const sanitized = { ...config };
-  delete sanitized.openai_api_key;
-  delete sanitized.processed_ids;
+  const sanitized: Record<string, unknown> = {};
+  for (const key of [
+    'keywords',
+    'sources',
+    'domain_rules',
+    'relevance_threshold',
+    'openai_model',
+    'openai_base_url',
+    'output_dir',
+    'prompts_dir',
+    'history_file',
+    'prompt_system',
+    'prompt_user_template',
+  ]) {
+    if (config[key] !== undefined) {
+      sanitized[key] = config[key];
+    }
+  }
   return sanitized;
 }
 
@@ -882,15 +912,9 @@ async function readStoredConfig(env: Env): Promise<StoredConfig> {
 }
 
 function configFromStoredConfig(env: Env, storedConfig: StoredConfig): Config {
-  if (storedConfig.source === 'kv') {
-    return Config.fromObject({
-      ...storedConfig.config,
-      openai_api_key: env.OPENAI_API_KEY,
-    });
-  }
-
   return Config.fromObject({
     ...storedConfig.config,
+    ...workerRuntimeConfig(env),
     openai_api_key: env.OPENAI_API_KEY,
   });
 }
@@ -1606,7 +1630,7 @@ export default {
   },
 
   // Queue 消费入口。
-  // 每条消息触发一次 Pipeline；成功 ack，失败 retry。
+  // 每条消息触发一次 Pipeline；成功或失败后都 ack，失败状态会写入 run status 供前端停止轮询。
   async queue(batch: MessageBatch<RunMessage>, env: Env): Promise<void> {
     for (const message of batch.messages) {
       let runId = message.body.runId;
@@ -1643,7 +1667,7 @@ export default {
           }).catch(() => undefined);
         }
         console.error(`Queue message failed: ${(error as Error).message}`);
-        message.retry({ delaySeconds: 60 });
+        message.ack();
       }
     }
   },

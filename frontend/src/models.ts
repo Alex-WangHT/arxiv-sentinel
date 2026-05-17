@@ -24,11 +24,8 @@ export interface EditableConfig {
   relevance_threshold: Score;
   openai_model: string;
   openai_base_url?: string;
-  max_results_per_category?: number;
-  max_concurrent_requests?: number;
   output_dir?: string;
   prompts_dir?: string;
-  log_level?: 'DEBUG' | 'INFO' | 'WARNING' | 'ERROR';
   history_file?: string;
   prompt_system?: string;
   prompt_user_template?: string;

@@ -5,6 +5,8 @@ workers_dev = true
 
 [vars]
 CONFIG_KV_KEY = "paper-sniffer/config"
+MAX_CONCURRENT_REQUESTS = "3"
+LOG_LEVEL = "INFO"
 
 [[kv_namespaces]]
 binding = "CONFIG_KV"
