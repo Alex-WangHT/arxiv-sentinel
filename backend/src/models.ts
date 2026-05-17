@@ -25,10 +25,26 @@ export interface Paper {
   published: string;
 }
 
+export interface SniffProgressUpdate {
+  source: string;
+  sourceName: string;
+  sourceIndex: number;
+  totalSources: number;
+  category?: string;
+  categoryIndex?: number;
+  totalCategories?: number;
+  page?: number;
+  rawEntryCount?: number;
+  matchedCount?: number;
+  totalMatched: number;
+  message: string;
+}
+
+export type SniffProgressReporter = (update: SniffProgressUpdate) => Promise<void> | void;
 
 export interface PaperSniffer {
   readonly name: string;
-  sniff(targetDate?: Date): Promise<Paper[]>;
+  sniff(targetDate?: Date, progress?: SniffProgressReporter): Promise<Paper[]>;
 }
 
 export interface AnalysisResult {

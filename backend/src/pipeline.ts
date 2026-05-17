@@ -2,10 +2,14 @@ import { Config } from './config';
 import { LlmClient } from './llm_client';
 import { PaperAnalyzer } from './paper_analyzer';
 import { ArxivSniffer } from './arxiv_sniffer';
-import { AnalysisResult, Paper, PipelineResult, PaperSniffer } from './models';
+import {
+  AnalysisResult,
+  Paper,
+  PipelineResult,
+  PaperSniffer,
+} from './models';
 
 const BEIJING_TIME_OFFSET_MS = 8 * 60 * 60 * 1000;
-const MAX_PAPERS_PER_WORKER_INVOCATION = 5;
 
 export type PipelineRunStatus = 'queued' | 'running' | 'completed' | 'failed';
 export type PipelineLogLevel = 'info' | 'warn' | 'error';
@@ -179,7 +183,6 @@ export class Pipeline {
       if (source.type === 'arxiv') {
         this.registerSniffer(new ArxivSniffer(
           rules,
-          this.config.max_results_per_category,
           undefined,
           source.id,
           source.name,
@@ -201,6 +204,7 @@ export class Pipeline {
         allPapers = allPapers.concat(papers);
       } catch (error) {
         console.error(`嗅探器 ${sniffer.name} 运行失败: ${(error as Error).message}`);
+        throw error;
       }
     }
 
@@ -335,27 +339,17 @@ export class Pipeline {
         };
       }
 
-      const papersForThisRun = papers.slice(0, MAX_PAPERS_PER_WORKER_INVOCATION);
-      const deferredCount = papers.length - papersForThisRun.length;
-      if (deferredCount > 0) {
-        console.warn(
-          `本次 Worker invocation 只处理前 ${papersForThisRun.length} 篇论文，剩余 ${deferredCount} 篇留到后续运行，避免 subrequests 超限`,
-        );
-      }
-
       console.info('步骤 2: 开始分析论文摘要');
       await this.reportProgress({
         targetDate: targetDateStr,
         status: 'running',
         progress: 45,
         step: '分析论文',
-        message: deferredCount > 0
-          ? `正在调用模型分析前 ${papersForThisRun.length} 篇论文，剩余 ${deferredCount} 篇留到后续运行`
-          : `正在调用模型分析 ${papersForThisRun.length} 篇论文`,
+        message: `正在调用模型分析 ${papers.length} 篇论文`,
         totalFetched,
       });
       const analyzedResults = await this.analyzePapers(
-        papersForThisRun,
+        papers,
         async (completed, batchTotal) => {
           await this.reportProgress({
             targetDate: targetDateStr,
@@ -402,22 +396,18 @@ export class Pipeline {
         totalFetched,
         totalAnalyzed,
       });
-      await this.updateHistory(papersForThisRun);
-
-      const hasDeferredPapers = deferredCount > 0;
+      await this.updateHistory(papers);
 
       console.info('='.repeat(60));
-      console.info(hasDeferredPapers ? '本批次执行完成，等待队列续跑' : '流水线执行完成');
+      console.info('流水线执行完成');
       console.info('='.repeat(60));
 
       await this.reportProgress({
         targetDate: targetDateStr,
-        status: hasDeferredPapers ? 'running' : 'completed',
-        progress: hasDeferredPapers ? 95 : 100,
-        step: hasDeferredPapers ? '批次完成' : '完成',
-        message: hasDeferredPapers
-          ? `本批次已分析 ${totalAnalyzed} 篇论文，剩余 ${deferredCount} 篇将进入队列等待下一次 Worker invocation`
-          : `流水线已完成，共分析 ${totalAnalyzed} 篇论文`,
+        status: 'completed',
+        progress: 100,
+        step: '完成',
+        message: `流水线已完成，共分析 ${totalAnalyzed} 篇论文`,
         totalFetched,
         totalAnalyzed,
       });

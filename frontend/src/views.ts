@@ -188,19 +188,15 @@ function renderScoreOptions(selected: string): string {
   }).join('');
 }
 
-function renderDashboardToolbar(filters: UiFilters, refreshState?: DashboardRefreshState): string {
+function renderDashboardToolbar(filters: UiFilters): string {
   const exportMd = `/export.md${queryString(filters, { selected: '' })}`;
   const exportJson = `/export.json${queryString(filters, { selected: '' })}`;
-  const runningFields = refreshState?.kind === 'running'
-    ? `<input type="hidden" name="running" value="1"><input type="hidden" name="attempt" value="${escapeAttr(refreshState.attempt)}">`
-    : '';
 
-  return `<form class="toolbar" method="get" action="/">
-    ${runningFields}
+  return `<form class="toolbar" method="get" action="/" data-dashboard-toolbar>
     <input type="hidden" name="view" value="${escapeAttr(filters.view)}">
     <label>
       <span>日期</span>
-      <input type="date" name="date" value="${escapeAttr(filters.date)}">
+      <input type="date" name="date" value="${escapeAttr(filters.date)}" data-auto-submit-date>
     </label>
     <label class="grow">
       <span>搜索</span>
@@ -215,7 +211,7 @@ function renderDashboardToolbar(filters: UiFilters, refreshState?: DashboardRefr
       <input name="keyword" value="${escapeAttr(filters.keyword)}" placeholder="agent">
     </label>
     <button type="submit">查询</button>
-    <button type="submit" name="ensure" value="1">刷新</button>
+    <button type="submit" name="ensure" value="1">重新搜索</button>
   </form>`;
 }
 
@@ -226,24 +222,18 @@ function renderRefreshStatus(state?: DashboardRefreshState): string {
 
   const progressValue = Math.max(0, Math.min(100, Math.round(state.progress ?? 0)));
   const isActive = state.kind === 'queued' || state.kind === 'running';
-  const next = state.nextUrl
-    ? `<p class="muted">页面会自动检查结果；已检查 ${state.attempt} 次。</p>`
-    : '';
   const progress = isActive
-    ? `<div class="progress" aria-label="运行进度"><span style="width: ${progressValue}%"></span></div>`
-    : '';
-  const action = state.nextUrl
-    ? `<a class="button secondary mini" href="${escapeAttr(state.nextUrl)}">立即检查</a>`
+    ? `<div class="progress" aria-label="运行进度"><span data-run-progress-fill style="width: ${progressValue}%"></span></div>`
     : '';
   const logs = (state.logs || []).slice(-6);
   const logList = logs.length > 0
-    ? `<ol class="run-log">
+    ? `<ol class="run-log" data-run-log>
         ${logs.map(log => `<li class="log-${escapeAttr(log.level)}">
           <span>${escapeHtml(log.step || '日志')}</span>
           <p>${escapeHtml(log.message)}</p>
         </li>`).join('')}
       </ol>`
-    : '';
+    : '<ol class="run-log" data-run-log></ol>';
   const title = state.kind === 'queued'
     ? '流水线已排队'
     : state.kind === 'running'
@@ -252,16 +242,14 @@ function renderRefreshStatus(state?: DashboardRefreshState): string {
         ? '刷新完成'
         : '刷新失败';
 
-  return `<section class="refresh-status refresh-${escapeAttr(state.kind)}"${state.nextUrl ? ` data-auto-refresh-url="${escapeAttr(state.nextUrl)}"` : ''}>
+  return `<section class="refresh-status refresh-${escapeAttr(state.kind)}"${isActive ? ` data-run-status-date="${escapeAttr(state.date)}"` : ''}>
     <div>
-      <h2>${title}</h2>
-      ${state.currentStep ? `<strong class="refresh-step">${escapeHtml(state.currentStep)} · ${progressValue}%</strong>` : ''}
-      <p>${escapeHtml(state.message)}</p>
-      ${next}
+      <h2 data-run-status-title>${title}</h2>
+      ${state.currentStep ? `<strong class="refresh-step" data-run-current-step>${escapeHtml(state.currentStep)} · ${progressValue}%</strong>` : '<strong class="refresh-step" data-run-current-step></strong>'}
+      <p data-run-message>${escapeHtml(state.message)}</p>
       ${progress}
       ${logList}
     </div>
-    ${action}
   </section>`;
 }
 
@@ -405,7 +393,7 @@ export function renderDashboardPage(options: {
   </header>
   ${renderRefreshStatus(options.refreshState)}
   ${renderViewTabs(options.filters, options.focusTotal, options.totalCount)}
-  ${renderDashboardToolbar(options.filters, options.refreshState)}
+  ${renderDashboardToolbar(options.filters)}
   ${renderKeywordFacets(options.keywordFacets, options.filters)}
   ${renderStats(options.results, options.totalCount)}
   ${renderPaperList(options.results, options.filters, options.selected)}`;
@@ -609,20 +597,6 @@ function renderConfigForm(config: EditableConfig): string {
       <span>模型服务地址</span>
       <input name="openai_base_url" value="${escapeAttr(configText(config, 'openai_base_url'))}" placeholder="https://api.openai.com/v1">
     </label>
-    <label>
-      <span>每个分类最多抓取</span>
-      <input type="number" min="1" max="200" name="max_results_per_category" value="${escapeAttr(configText(config, 'max_results_per_category'))}">
-    </label>
-    <label>
-      <span>最大并发请求</span>
-      <input type="number" min="1" max="500" name="max_concurrent_requests" value="${escapeAttr(configText(config, 'max_concurrent_requests'))}">
-    </label>
-    <label>
-      <span>日志等级</span>
-      <select name="log_level">
-        ${['DEBUG', 'INFO', 'WARNING', 'ERROR'].map(level => `<option value="${level}" ${config.log_level === level ? 'selected' : ''}>${level}</option>`).join('')}
-      </select>
-    </label>
     <label class="wide">
       <span>系统提示词</span>
       <textarea name="prompt_system" rows="14">${escapeHtml(systemPrompt)}</textarea>
@@ -799,15 +773,119 @@ export function renderErrorPage(title: string, message: string): string {
 
 const APP_JS = `
 (() => {
-  const autoRefresh = document.querySelector('[data-auto-refresh-url]');
-  if (autoRefresh instanceof HTMLElement) {
-    const url = autoRefresh.getAttribute('data-auto-refresh-url');
-    if (url) {
-      window.setTimeout(() => {
-        window.location.href = url;
-      }, 2000);
+  function runStatusTitle(status) {
+    if (status === 'queued') return '流水线已排队';
+    if (status === 'running') return '正在运行流水线';
+    if (status === 'completed') return '刷新完成';
+    return '刷新失败';
+  }
+
+  function updateRunLog(list, logs) {
+    if (!(list instanceof HTMLElement)) return;
+    list.replaceChildren();
+    for (const log of (logs || []).slice(-6)) {
+      const item = document.createElement('li');
+      item.className = 'log-' + (log.level || 'info');
+
+      const step = document.createElement('span');
+      step.textContent = log.step || '日志';
+
+      const message = document.createElement('p');
+      message.textContent = log.message || '';
+
+      item.append(step, message);
+      list.appendChild(item);
     }
   }
+
+  function bindRunStatusPolling() {
+    const root = document.querySelector('[data-run-status-date]');
+    if (!(root instanceof HTMLElement)) return;
+
+    const date = root.getAttribute('data-run-status-date');
+    if (!date) return;
+
+    let stopped = false;
+    const poll = async () => {
+      if (stopped) return;
+
+      try {
+        const response = await fetch('/api/run-status?target_date=' + encodeURIComponent(date), {
+          headers: { 'accept': 'application/json' },
+          cache: 'no-store',
+        });
+        if (!response.ok) throw new Error('HTTP ' + response.status);
+
+        const body = await response.json();
+        const run = body && body.run;
+        if (!run) return;
+
+        const progress = Math.max(0, Math.min(100, Math.round(Number(run.progress) || 0)));
+        root.className = 'refresh-status refresh-' + run.status;
+
+        const title = root.querySelector('[data-run-status-title]');
+        if (title) title.textContent = runStatusTitle(run.status);
+
+        const currentStep = root.querySelector('[data-run-current-step]');
+        if (currentStep) currentStep.textContent = (run.current_step || '运行中') + ' · ' + progress + '%';
+
+        const message = root.querySelector('[data-run-message]');
+        if (message) {
+          const latestLog = Array.isArray(run.logs) ? run.logs.at(-1) : undefined;
+          message.textContent = run.status === 'failed'
+            ? (run.error || '流水线运行失败。')
+            : (latestLog && latestLog.message) || '流水线正在运行。';
+        }
+
+        const fill = root.querySelector('[data-run-progress-fill]');
+        if (fill instanceof HTMLElement) fill.style.width = progress + '%';
+
+        updateRunLog(root.querySelector('[data-run-log]'), run.logs);
+
+        if (run.status !== 'queued' && run.status !== 'running') {
+          stopped = true;
+          root.removeAttribute('data-run-status-date');
+          if (run.status === 'completed') {
+            const url = new URL(window.location.href);
+            url.searchParams.delete('ensure');
+            url.searchParams.delete('running');
+            url.searchParams.delete('attempt');
+            window.location.assign(url.toString());
+          }
+          return;
+        }
+      } catch (error) {
+        console.warn('run status polling failed', error);
+      }
+
+      window.setTimeout(poll, 2000);
+    };
+
+    window.setTimeout(poll, 1000);
+  }
+
+  bindRunStatusPolling();
+
+  function bindDashboardToolbar() {
+    const form = document.querySelector('[data-dashboard-toolbar]');
+    if (!(form instanceof HTMLFormElement)) return;
+
+    const dateInput = form.querySelector('[data-auto-submit-date]');
+    if (!(dateInput instanceof HTMLInputElement)) return;
+
+    let submitted = false;
+    dateInput.addEventListener('change', () => {
+      if (submitted || !/^\\d{4}-\\d{2}-\\d{2}$/.test(dateInput.value)) return;
+      submitted = true;
+      if (typeof form.requestSubmit === 'function') {
+        form.requestSubmit();
+      } else {
+        form.submit();
+      }
+    });
+  }
+
+  bindDashboardToolbar();
 
   function bindRepeatList(root) {
     const rows = root.querySelector('[data-list-rows]');

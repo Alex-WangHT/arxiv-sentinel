@@ -244,11 +244,8 @@ VALID_CONFIG_BODY='{
   "relevance_threshold": "MEDIUM",
   "openai_model": "deepseek-v4-flash",
   "openai_base_url": "https://api.deepseek.com/v1",
-  "max_results_per_category": 5,
-  "max_concurrent_requests": 3,
   "output_dir": "output",
   "prompts_dir": "prompts",
-  "log_level": "INFO",
   "history_file": "history.json"
 }'
 

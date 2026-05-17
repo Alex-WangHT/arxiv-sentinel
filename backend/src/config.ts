@@ -32,7 +32,6 @@ export interface ConfigData {
   openai_api_key: string;
   openai_model: string;
   openai_base_url?: string;
-  max_results_per_category?: number;
   max_concurrent_requests?: number;
   output_dir?: string;
   prompts_dir?: string;
@@ -43,8 +42,7 @@ export interface ConfigData {
 }
 
 // Cloudflare Workers 传进来的 env 里的变量通常是字符串。
-// 比如 MAX_RESULTS_PER_CATEGORY 在 wrangler.toml 中写成 "5"，这里先按 string 接收，
-// 后面 parseRawConfig / optionalNumber 会把它转成 number。
+// 后面 parseRawConfig / optionalNumber 会把数字字符串转成 number。
 export interface WorkerConfigEnv {
   KEYWORDS?: string;
   SOURCES?: string;
@@ -53,7 +51,6 @@ export interface WorkerConfigEnv {
   OPENAI_API_KEY?: string;
   OPENAI_MODEL?: string;
   OPENAI_BASE_URL?: string;
-  MAX_RESULTS_PER_CATEGORY?: string;
   MAX_CONCURRENT_REQUESTS?: string;
   OUTPUT_DIR?: string;
   PROMPTS_DIR?: string;
@@ -75,7 +72,6 @@ export class Config {
   openai_api_key: string;
   openai_model: string;
   openai_base_url: string;
-  max_results_per_category: number;
   max_concurrent_requests: number;
   output_dir: string;
   prompts_dir: string;
@@ -93,7 +89,6 @@ export class Config {
     this.openai_api_key = data.openai_api_key;
     this.openai_model = data.openai_model;
     this.openai_base_url = data.openai_base_url || 'https://api.openai.com/v1';
-    this.max_results_per_category = data.max_results_per_category || 50;
     this.max_concurrent_requests = data.max_concurrent_requests || 5;
     this.output_dir = data.output_dir || 'output';
     this.prompts_dir = data.prompts_dir || 'prompts';
@@ -121,10 +116,6 @@ export class Config {
       openai_api_key: env.OPENAI_API_KEY,
       openai_model: env.OPENAI_MODEL,
       openai_base_url: env.OPENAI_BASE_URL,
-      max_results_per_category: this.envNumber(
-        env.MAX_RESULTS_PER_CATEGORY,
-        undefined,
-      ),
       max_concurrent_requests: this.envNumber(
         env.MAX_CONCURRENT_REQUESTS,
         undefined,
@@ -164,7 +155,6 @@ export class Config {
       openai_api_key: String(raw.openai_api_key || ''),
       openai_model: String(raw.openai_model || ''),
       openai_base_url: this.optionalString(raw.openai_base_url),
-      max_results_per_category: this.optionalNumber(raw.max_results_per_category),
       max_concurrent_requests: this.optionalNumber(raw.max_concurrent_requests),
       output_dir: this.optionalString(raw.output_dir),
       prompts_dir: this.optionalString(raw.prompts_dir),
@@ -310,14 +300,6 @@ export class Config {
       errors.push(
         `relevance_threshold: 必须为 ${RELEVANCE_LEVELS.join(', ')} 之一，当前值: ${cfg.relevance_threshold}`,
       );
-    }
-
-    if (
-      !Number.isInteger(cfg.max_results_per_category)
-      || cfg.max_results_per_category < 1
-      || cfg.max_results_per_category > 200
-    ) {
-      errors.push('max_results_per_category: 必须为 1-200 之间的整数');
     }
 
     if (
